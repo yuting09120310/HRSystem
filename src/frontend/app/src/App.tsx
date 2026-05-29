@@ -7,6 +7,7 @@ import PasswordPage from './PasswordPage';
 import AdminPage from './AdminPage';
 import SalaryPage from './SalaryPage';
 import SalaryManagementPage from './SalaryManagementPage';
+import LeaveBalancePage from './LeaveBalancePage';
 
 const API_BASE = 'http://localhost:3001/api';
 
@@ -80,6 +81,7 @@ const App = () => {
           <p className='text-xs text-gray-500 uppercase tracking-wider px-3 mb-1'>主要功能</p>
           <button onClick={() => setView('punch')} className={`p-3 rounded flex items-center gap-2 transition text-left ${view === 'punch' ? 'bg-slate-700' : 'hover:bg-slate-800'}`}><Clock size={20}/> 打卡系統</button>
           <button onClick={() => setView('leave')} className={`p-3 rounded flex items-center gap-2 transition text-left ${view === 'leave' ? 'bg-slate-700' : 'hover:bg-slate-800'}`}><Calendar size={20}/> 請假申請</button>
+          <button onClick={() => setView('balance')} className={`p-3 rounded flex items-center gap-2 transition text-left ${view === 'balance' ? 'bg-slate-700' : 'hover:bg-slate-800'}`}><Calendar size={20}/> 假別餘額</button>
           {(user.role === 'MANAGER' || user.role === 'ADMIN') && (
             <button onClick={() => setView('approval')} className={`p-3 rounded flex items-center gap-2 transition text-left ${view === 'approval' ? 'bg-slate-700' : 'hover:bg-slate-800'}`}><User size={20}/> 簽核管理</button>
           )}
@@ -116,6 +118,7 @@ const App = () => {
       <main className='flex-1 p-10 overflow-auto'>
         {view === 'punch' && <PunchView userId={user.id} />}
         {view === 'leave' && <LeaveView userId={user.id} user={user} />}
+        {view === 'balance' && <LeaveBalancePage />}
         {view === 'approval' && <AdminView userId={user.id} />}
         {view === 'salary' && <SalaryPage />}
         {view === 'salary-manage' && <SalaryManagementPage />}
@@ -170,19 +173,31 @@ const PunchView = ({ userId }: { userId: number }) => {
 const LeaveView = ({ userId, user }: { userId: number; user: UserData }) => {
   const [form, setForm] = useState({ leaveType: '事假', startDate: '', endDate: '', reason: '' });
   const [requests, setRequests] = useState<LeaveRequest[]>([]);
+  const [leaveRules, setLeaveRules] = useState<{ leave_type: string }[]>([]);
+
   useEffect(() => { 
-    axios.get(`${API_BASE}/leave/my`).then((res: AxiosResponse<LeaveRequest[]>) => setRequests(res.data)); 
+    axios.get(`${API_BASE}/leave/my`).then((res: AxiosResponse<LeaveRequest[]>) => setRequests(res.data));
+    axios.get(`${API_BASE}/leave/rules`).then((res) => {
+      const rules = res.data.map((r: any) => ({ leave_type: r.leave_type }));
+      // 確保特休也在選項中
+      if (!rules.find((r: any) => r.leave_type === '特休')) {
+        rules.push({ leave_type: '特休' });
+      }
+      setLeaveRules(rules);
+    });
   }, []);
+
   const submit = async () => {
     await axios.post(`${API_BASE}/leave`, { ...form });
     setForm({ leaveType: '事假', startDate: '', endDate: '', reason: '' });
     axios.get(`${API_BASE}/leave/my`).then((res: AxiosResponse<LeaveRequest[]>) => setRequests(res.data));
   };
+
   return (
     <div className='max-w-4xl mx-auto'>
       <h2 className='text-3xl font-bold mb-6'>請假申請</h2>
       <div className='bg-white p-6 shadow rounded-xl mb-8 grid grid-cols-2 gap-4'>
-        <div className='flex flex-col gap-2'><label className='text-sm text-gray-500'>種類</label><select className='p-2 border rounded' value={form.leaveType} onChange={e => setForm({...form, leaveType: e.target.value})}><option>事假</option><option>病假</option><option>特休</option></select></div>
+        <div className='flex flex-col gap-2'><label className='text-sm text-gray-500'>種類</label><select className='p-2 border rounded' value={form.leaveType} onChange={e => setForm({...form, leaveType: e.target.value})}>{leaveRules.map(r => <option key={r.leave_type}>{r.leave_type}</option>)}</select></div>
         <div className='flex flex-col gap-2'><label className='text-sm text-gray-500'>開始</label><input type='date' className='p-2 border rounded' value={form.startDate} onChange={e => setForm({...form, startDate: e.target.value})} /></div>
         <div className='flex flex-col gap-2'><label className='text-sm text-gray-500'>結束</label><input type='date' className='p-2 border rounded' value={form.endDate} onChange={e => setForm({...form, endDate: e.target.value})} /></div>
         <div className='flex flex-col gap-2'><label className='text-sm text-gray-500'>原因</label><input className='p-2 border rounded' value={form.reason} onChange={e => setForm({...form, reason: e.target.value})} /></div>

@@ -3,6 +3,7 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const pool = require('./db');
+const { LEAVE_RULES, getLeaveBalance } = require('./leave_service');
 require('dotenv').config({ path: './src/backend/.env' });
 
 const app = express();
@@ -213,26 +214,26 @@ const adminMiddleware = (req, res, next) => {
 
 app.get('/api/admin/users', adminMiddleware, async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT u.id, u.username, u.full_name, u.role, u.status, u.dept_id, d.name as dept_name FROM users u LEFT JOIN departments d ON u.dept_id = d.id ORDER BY u.id');
+    const [rows] = await pool.query('SELECT u.id, u.username, u.full_name, u.role, u.status, u.dept_id, u.hire_date, d.name as dept_name FROM users u LEFT JOIN departments d ON u.dept_id = d.id ORDER BY u.id');
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/admin/users', adminMiddleware, async (req, res) => {
-  const { username, password, fullName, deptId, role } = req.body;
+  const { username, password, fullName, deptId, role, hireDate } = req.body;
   if (!username || !password || !fullName || !deptId) return res.status(400).json({ error: '請填寫所有必填欄位' });
   try {
     const [[existing]] = await pool.query('SELECT id FROM users WHERE username = ?', [username]);
     if (existing) return res.status(400).json({ error: '帳號已存在' });
-    await pool.query('INSERT INTO users (username, password, full_name, dept_id, role, status) VALUES (?, ?, ?, ?, ?, \'ACTIVE\')', [username, password, fullName, deptId, role || 'EMPLOYEE']);
+    await pool.query('INSERT INTO users (username, password, full_name, dept_id, role, status, hire_date) VALUES (?, ?, ?, ?, ?, \'ACTIVE\', ?)', [username, password, fullName, deptId, role || 'EMPLOYEE', hireDate || new Date().toISOString().split('T')[0]]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/admin/users/:id', adminMiddleware, async (req, res) => {
-  const { fullName, deptId, role, status } = req.body;
+  const { fullName, deptId, role, status, hireDate } = req.body;
   try {
-    await pool.query('UPDATE users SET full_name = ?, dept_id = ?, role = ?, status = ? WHERE id = ?', [fullName, deptId, role, status, req.params.id]);
+    await pool.query('UPDATE users SET full_name = ?, dept_id = ?, role = ?, status = ?, hire_date = ? WHERE id = ?', [fullName, deptId, role, status, hireDate, req.params.id]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -384,6 +385,33 @@ app.post('/api/salary/calculate', managerMiddleware, async (req, res) => {
     }
 
     res.json({ success: true, netSalary: Math.round(net), deductions: deductionDetails });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 請假規範與特休計算
+app.get('/api/leave/rules', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM leave_rules ORDER BY id');
+    res.json(rows.length ? rows : LEAVE_RULES.map(r => ({ leave_type: r.type, days_per_year: r.days, description: r.desc })));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/leave/balance', async (req, res) => {
+  const userId = req.query.userId || req.user.id;
+  const year = req.query.year || new Date().getFullYear();
+  try {
+    const balances = await getLeaveBalance(userId, parseInt(year));
+    res.json(balances);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/leave/balance/recalculate', adminMiddleware, async (req, res) => {
+  const { userId, year } = req.body;
+  const targetYear = year || new Date().getFullYear();
+  try {
+    await pool.query('DELETE FROM employee_leave_balances WHERE user_id = ? AND year = ?', [userId, targetYear]);
+    const balances = await getLeaveBalance(userId, targetYear);
+    res.json({ success: true, balances });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
