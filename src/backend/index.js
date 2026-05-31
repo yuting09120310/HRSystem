@@ -218,42 +218,52 @@ const adminMiddleware = (req, res, next) => {
 
 app.get('/api/admin/users', adminMiddleware, async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT u.id, u.username, u.full_name, u.role, u.status, u.dept_id, u.hire_date, d.name as dept_name FROM users u LEFT JOIN departments d ON u.dept_id = d.id ORDER BY u.id');
+    const [rows] = await pool.query('SELECT u.id, u.username, u.full_name, u.role, u.status, u.dept_id, u.hire_date, u.employment_type, u.position, u.hourly_wage, u.base_salary, u.professional_allowance, u.meal_allowance, d.name as dept_name FROM users u LEFT JOIN departments d ON u.dept_id = d.id ORDER BY u.id');
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/admin/users', adminMiddleware, async (req, res) => {
-  const { username, password, fullName, deptId, role, hireDate } = req.body;
+  const { username, password, fullName, deptId, role, hireDate, employmentType, position, hourlyWage, baseSalary, professionalAllowance, mealAllowance } = req.body;
   if (!username || !password || !fullName || !deptId) return res.status(400).json({ error: '請填寫所有必填欄位' });
   try {
     const [[existing]] = await pool.query('SELECT id FROM users WHERE username = ?', [username]);
     if (existing) return res.status(400).json({ error: '帳號已存在' });
-    await pool.query('INSERT INTO users (username, password, full_name, dept_id, role, status, hire_date) VALUES (?, ?, ?, ?, ?, \'ACTIVE\', ?)', [username, password, fullName, deptId, role || 'EMPLOYEE', hireDate || new Date().toISOString().split('T')[0]]);
+    await pool.query('INSERT INTO users (username, password, full_name, dept_id, role, status, hire_date, employment_type, position, hourly_wage, base_salary, professional_allowance, meal_allowance) VALUES (?, ?, ?, ?, ?, \'ACTIVE\', ?, ?, ?, ?, ?, ?, ?)', [username, password, fullName, deptId, role || 'EMPLOYEE', hireDate || new Date().toISOString().split('T')[0], employmentType || 'FULL_TIME', position || null, hourlyWage || null, baseSalary || null, professionalAllowance || null, mealAllowance || null]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/admin/users/:id', adminMiddleware, async (req, res) => {
-  const { fullName, deptId, role, status, hireDate } = req.body;
+  const { fullName, deptId, role, status, hireDate, employmentType, position, hourlyWage, baseSalary, professionalAllowance, mealAllowance } = req.body;
   try {
-    await pool.query('UPDATE users SET full_name = ?, dept_id = ?, role = ?, status = ?, hire_date = ? WHERE id = ?', [fullName, deptId, role, status, hireDate, req.params.id]);
+    await pool.query('UPDATE users SET full_name = ?, dept_id = ?, role = ?, status = ?, hire_date = ?, employment_type = ?, position = ?, hourly_wage = ?, base_salary = ?, professional_allowance = ?, meal_allowance = ? WHERE id = ?', [fullName, deptId, role, status, hireDate, employmentType, position, hourlyWage, baseSalary, professionalAllowance, mealAllowance, req.params.id]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.get('/api/admin/departments', adminMiddleware, async (req, res) => {
+  const { type } = req.query;
   try {
-    const [rows] = await pool.query('SELECT d.id, d.name, d.manager_id, d.schedule_type, u.full_name as manager_name FROM departments d LEFT JOIN users u ON d.manager_id = u.id ORDER BY d.id');
+    let query = 'SELECT d.id, d.name, d.manager_id, d.type, d.schedule_type, u.full_name as manager_name FROM departments d LEFT JOIN users u ON d.manager_id = u.id';
+    const params = [];
+    
+    if (type) {
+      query += ' WHERE d.type = ?';
+      params.push(type);
+    }
+    
+    query += ' ORDER BY d.id';
+    const [rows] = await pool.query(query, params);
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/admin/departments', adminMiddleware, async (req, res) => {
-  const { name, scheduleType } = req.body;
+  const { name, scheduleType, type } = req.body;
   if (!name) return res.status(400).json({ error: '請填寫部門名稱' });
   try {
-    await pool.query('INSERT INTO departments (name, schedule_type) VALUES (?, ?)', [name, scheduleType || 'FIXED']);
+    await pool.query('INSERT INTO departments (name, schedule_type, type) VALUES (?, ?, ?)', [name, scheduleType || 'FIXED', type || 'DEPARTMENT']);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -359,7 +369,7 @@ app.get('/api/salary/history/me', async (req, res) => {
 app.post('/api/salary/calculate', managerMiddleware, async (req, res) => {
   const { userId, month } = req.body;
   try {
-    const [[user]] = await pool.query('SELECT dept_id FROM users WHERE id = ?', [userId]);
+    const [[user]] = await pool.query('SELECT dept_id, employment_type, hourly_wage FROM users WHERE id = ?', [userId]);
     if (req.user.role === 'MANAGER' && user.dept_id !== req.user.dept_id) {
       return res.status(403).json({ error: '僅能計算所屬部門員工薪資' });
     }
@@ -372,57 +382,87 @@ app.post('/api/salary/calculate', managerMiddleware, async (req, res) => {
     const workStartTime = schedule?.work_start_time || '08:00:00';
     const workEndTime = schedule?.work_end_time || '17:00:00';
 
-    const base = parseFloat(record.base_salary);
-    const prof = parseFloat(record.professional_allowance);
-    const meal = parseFloat(record.meal_allowance);
-    const totalSalary = base + prof + meal;
-
-    const personalRate = totalSalary / 30;
-    const sickRate = personalRate / 2;
-    const minuteRate = totalSalary / 30 / 8 / 60; // 每分鐘扣款金額
-
-    // 計算請假扣款
-    const [leaveRows] = await pool.query('SELECT leave_type, COUNT(*) as days FROM leave_requests WHERE user_id = ? AND status = \'APPROVED\' AND DATE_FORMAT(start_date, \'%Y-%m\') = ? GROUP BY leave_type', [userId, month]);
-    
+    let totalSalary = 0;
     let totalDeductions = 0;
     const deductionDetails = [];
-    for (const lr of leaveRows) {
-      let rate = 0;
-      if (lr.leave_type === '事假') rate = personalRate;
-      else if (lr.leave_type === '病假') rate = sickRate;
+
+    // 根據僱用類型計算薪資
+    if (user.employment_type === 'PART_TIME') {
+      // 工讀生：時薪制
+      const hourlyWage = parseFloat(user.hourly_wage || 0);
+      if (hourlyWage === 0) {
+        return res.status(400).json({ error: '請先設定時薪' });
+      }
+
+      // 計算實際工作時數（從打卡紀錄）
+      const [attendance] = await pool.query('SELECT clock_in, clock_out FROM attendance WHERE user_id = ? AND DATE_FORMAT(date, \'%Y-%m\') = ? AND clock_in IS NOT NULL AND clock_out IS NOT NULL', [userId, month]);
       
-      const amount = rate * lr.days;
-      totalDeductions += amount;
-      deductionDetails.push({ leave_type: lr.leave_type, days: lr.days, amount: Math.round(amount) });
-    }
+      let totalWorkingHours = 0;
+      attendance.forEach(a => {
+        const clockIn = new Date(a.clock_in);
+        const clockOut = new Date(a.clock_out);
+        const hours = (clockOut - clockIn) / 3600000; // 轉換為小時
+        totalWorkingHours += hours;
+      });
 
-    // 計算考勤扣款 (遲到/早退)
-    const [attendance] = await pool.query('SELECT clock_in, clock_out FROM attendance WHERE user_id = ? AND DATE_FORMAT(date, \'%Y-%m\') = ?', [userId, month]);
-    let lateMinutes = 0;
-    let earlyMinutes = 0;
+      totalSalary = hourlyWage * totalWorkingHours;
+      
+      // 工讀生不計算請假扣款（因為是時薪制，沒來就沒薪水）
+      // 但可以記錄工作時數
+      deductionDetails.push({ leave_type: '工作時數', days: Math.round(totalWorkingHours * 10) / 10, amount: 0 });
+      
+    } else {
+      // 正職員工：月薪制
+      const base = parseFloat(record.base_salary);
+      const prof = parseFloat(record.professional_allowance);
+      const meal = parseFloat(record.meal_allowance);
+      totalSalary = base + prof + meal;
 
-    attendance.forEach(a => {
-      if (a.clock_in) {
-        const clockInDate = new Date(a.clock_in);
-        const startDateTime = new Date(`${clockInDate.toISOString().split('T')[0]} ${workStartTime}`);
-        if (clockInDate > startDateTime) {
-          lateMinutes += (clockInDate - startDateTime) / 60000;
-        }
+      const personalRate = totalSalary / 30;
+      const sickRate = personalRate / 2;
+      const minuteRate = totalSalary / 30 / 8 / 60; // 每分鐘扣款金額
+
+      // 計算請假扣款
+      const [leaveRows] = await pool.query('SELECT leave_type, COUNT(*) as days FROM leave_requests WHERE user_id = ? AND status = \'APPROVED\' AND DATE_FORMAT(start_date, \'%Y-%m\') = ? GROUP BY leave_type', [userId, month]);
+      
+      for (const lr of leaveRows) {
+        let rate = 0;
+        if (lr.leave_type === '事假') rate = personalRate;
+        else if (lr.leave_type === '病假') rate = sickRate;
+        
+        const amount = rate * lr.days;
+        totalDeductions += amount;
+        deductionDetails.push({ leave_type: lr.leave_type, days: lr.days, amount: Math.round(amount) });
       }
-      if (a.clock_out) {
-        const clockOutDate = new Date(a.clock_out);
-        const endDateTime = new Date(`${clockOutDate.toISOString().split('T')[0]} ${workEndTime}`);
-        if (clockOutDate < endDateTime) {
-          earlyMinutes += (endDateTime - clockOutDate) / 60000;
-        }
-      }
-    });
 
-    const totalAttendanceMinutes = Math.round(lateMinutes + earlyMinutes);
-    if (totalAttendanceMinutes > 0) {
-      const attendanceDeduction = Math.round(totalAttendanceMinutes * minuteRate);
-      totalDeductions += attendanceDeduction;
-      deductionDetails.push({ leave_type: '考勤扣款', days: totalAttendanceMinutes, amount: attendanceDeduction });
+      // 計算考勤扣款 (遲到/早退)
+      const [attendance] = await pool.query('SELECT clock_in, clock_out FROM attendance WHERE user_id = ? AND DATE_FORMAT(date, \'%Y-%m\') = ?', [userId, month]);
+      let lateMinutes = 0;
+      let earlyMinutes = 0;
+
+      attendance.forEach(a => {
+        if (a.clock_in) {
+          const clockInDate = new Date(a.clock_in);
+          const startDateTime = new Date(`${clockInDate.toISOString().split('T')[0]} ${workStartTime}`);
+          if (clockInDate > startDateTime) {
+            lateMinutes += (clockInDate - startDateTime) / 60000;
+          }
+        }
+        if (a.clock_out) {
+          const clockOutDate = new Date(a.clock_out);
+          const endDateTime = new Date(`${clockOutDate.toISOString().split('T')[0]} ${workEndTime}`);
+          if (clockOutDate < endDateTime) {
+            earlyMinutes += (endDateTime - clockOutDate) / 60000;
+          }
+        }
+      });
+
+      const totalAttendanceMinutes = Math.round(lateMinutes + earlyMinutes);
+      if (totalAttendanceMinutes > 0) {
+        const attendanceDeduction = Math.round(totalAttendanceMinutes * minuteRate);
+        totalDeductions += attendanceDeduction;
+        deductionDetails.push({ leave_type: '考勤扣款', days: totalAttendanceMinutes, amount: attendanceDeduction });
+      }
     }
 
     const net = totalSalary - totalDeductions;
@@ -1418,10 +1458,11 @@ app.post('/api/shifts', adminMiddleware, async (req, res) => {
 app.get('/api/schedule', async (req, res) => {
   const { storeId, month } = req.query;
   try {
-    let query = `SELECT se.id, se.user_id, se.date, se.shift_id, u.full_name, s.name as shift_name, s.color 
+    let query = `SELECT se.id, se.user_id, se.date, se.shift_id, se.custom_time_start, se.custom_time_end,
+                        u.full_name, s.name as shift_name, s.color 
                  FROM schedule_entries se 
                  JOIN users u ON se.user_id = u.id 
-                 JOIN shifts s ON se.shift_id = s.id 
+                 LEFT JOIN shifts s ON se.shift_id = s.id 
                  WHERE u.dept_id = ? AND DATE_FORMAT(se.date, '%Y-%m') = ?`;
     const [rows] = await pool.query(query, [storeId, month]);
     res.json(rows);
@@ -1437,7 +1478,21 @@ app.post('/api/schedule', managerMiddleware, async (req, res) => {
       if (user.dept_id !== req.user.dept_id) return res.status(403).json({ error: '權限不足' });
     }
     
-    await pool.query('INSERT INTO schedule_entries (user_id, date, shift_id, created_by) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE shift_id = ?', [userId, date, shiftId, req.user.id, shiftId]);
+    await pool.query('INSERT INTO schedule_entries (user_id, date, shift_id, created_by, custom_time_start, custom_time_end) VALUES (?, ?, ?, ?, NULL, NULL) ON DUPLICATE KEY UPDATE shift_id = ?, custom_time_start = NULL, custom_time_end = NULL', [userId, date, shiftId, req.user.id, shiftId]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/schedule/custom', managerMiddleware, async (req, res) => {
+  const { userId, date, startTime, endTime } = req.body;
+  try {
+    // 檢查權限：主管只能排所屬門市
+    if (req.user.role === 'MANAGER') {
+      const [[user]] = await pool.query('SELECT dept_id FROM users WHERE id = ?', [userId]);
+      if (user.dept_id !== req.user.dept_id) return res.status(403).json({ error: '權限不足' });
+    }
+    
+    await pool.query('INSERT INTO schedule_entries (user_id, date, shift_id, custom_time_start, custom_time_end, created_by) VALUES (?, ?, NULL, ?, ?, ?) ON DUPLICATE KEY UPDATE shift_id = NULL, custom_time_start = ?, custom_time_end = ?', [userId, date, startTime, endTime, req.user.id, startTime, endTime]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });

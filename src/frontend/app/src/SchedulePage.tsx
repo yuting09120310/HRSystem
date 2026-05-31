@@ -7,6 +7,7 @@ const API_BASE = 'http://localhost:3001/api';
 interface Department {
   id: number;
   name: string;
+  type: 'DEPARTMENT' | 'STORE';
   schedule_type: 'FIXED' | 'SHIFT';
 }
 
@@ -29,14 +30,17 @@ interface ScheduleEntry {
   id: number;
   user_id: number;
   date: string;
-  shift_id: number;
-  shift_name: string;
-  color: string;
+  shift_id: number | null;
+  shift_name: string | null;
+  color: string | null;
+  custom_time_start: string | null;
+  custom_time_end: string | null;
 }
 
 const SchedulePage = () => {
   const [departments, setDepartments] = useState<Department[]>([]);
   const [selectedDept, setSelectedDept] = useState<Department | null>(null);
+  const [selectedOrgType, setSelectedOrgType] = useState<'DEPARTMENT' | 'STORE' | ''>('');
   const [userRole, setUserRole] = useState<string>('');
   
   // Fixed Mode State
@@ -54,6 +58,11 @@ const SchedulePage = () => {
   // Settings State
   const [showSettings, setShowSettings] = useState(false);
   const [editingShifts, setEditingShifts] = useState<Shift[]>([]);
+  
+  // Custom Time Modal State
+  const [showCustomTimeModal, setShowCustomTimeModal] = useState(false);
+  const [customTimeData, setCustomTimeData] = useState<{userId: number, date: string} | null>(null);
+  const [customTimeForm, setCustomTimeForm] = useState({ start_time: '10:00', end_time: '14:00' });
 
   useEffect(() => {
     // Get user role from localStorage or API
@@ -105,7 +114,9 @@ const SchedulePage = () => {
   const fetchShiftData = async (deptId: number) => {
     setLoading(true);
     try {
-      const monthStr = currentDate.toISOString().slice(0, 7);
+      const year = currentDate.getFullYear();
+      const month = currentDate.getMonth() + 1;
+      const monthStr = `${year}-${String(month).padStart(2, '0')}`;
       console.log('Fetching shift data for:', { deptId, monthStr });
       
       const [empRes, schedRes] = await Promise.all([
@@ -199,6 +210,19 @@ const SchedulePage = () => {
     }
     
     const shiftId = parseInt(shiftIdStr);
+    
+    // Check if this is a custom time shift (id = -1)
+    if (shiftId === -1) {
+      const year = date.getFullYear();
+      const month = date.getMonth() + 1;
+      const day = date.getDate();
+      const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      
+      setCustomTimeData({ userId, date: dateStr });
+      setShowCustomTimeModal(true);
+      setDragOverCell(null);
+      return;
+    }
 
     const year = date.getFullYear();
     const month = date.getMonth() + 1;
@@ -218,6 +242,27 @@ const SchedulePage = () => {
       alert(`排班失敗: ${err.response?.data?.error || err.message}`);
     } finally {
       setDragOverCell(null);
+    }
+  };
+  
+  const handleSaveCustomTime = async () => {
+    if (!customTimeData || !selectedDept) return;
+    
+    try {
+      // Send custom time as a special shift with start/end times
+      await axios.post(`${API_BASE}/schedule/custom`, {
+        userId: customTimeData.userId,
+        date: customTimeData.date,
+        startTime: customTimeForm.start_time,
+        endTime: customTimeForm.end_time
+      });
+      
+      await fetchShiftData(selectedDept.id);
+      setShowCustomTimeModal(false);
+      setCustomTimeData(null);
+    } catch (err: any) {
+      console.error('自訂時間失敗:', err);
+      alert(`儲存失敗: ${err.response?.data?.error || err.message}`);
     }
   };
 
@@ -262,7 +307,7 @@ const SchedulePage = () => {
     return date.toDateString() === today.toDateString();
   };
 
-  const formatTime = (time: string) => {
+  const formatTime = (time: string | null) => {
     if (!time) return '';
     return time.substring(0, 5);
   };
@@ -337,15 +382,31 @@ const SchedulePage = () => {
         <div className='flex gap-4 items-center'>
           <select 
             className='p-2 border rounded text-lg' 
-            value={selectedDept?.id || ''} 
+            value={selectedOrgType} 
             onChange={e => {
-              const dept = departments.find(d => d.id === Number(e.target.value));
-              setSelectedDept(dept || null);
+              setSelectedOrgType(e.target.value as 'DEPARTMENT' | 'STORE' | '');
+              setSelectedDept(null);
             }}
           >
-            <option value=''>選擇部門/門市</option>
-            {departments.map(d => <option key={d.id} value={d.id}>{d.name} ({d.schedule_type === 'FIXED' ? '固定制' : '排班制'})</option>)}
+            <option value=''>選擇單位類型</option>
+            <option value='DEPARTMENT'>總公司部門</option>
+            <option value='STORE'>門市</option>
           </select>
+          {selectedOrgType && (
+            <select 
+              className='p-2 border rounded text-lg' 
+              value={selectedDept?.id || ''} 
+              onChange={e => {
+                const dept = departments.find(d => d.id === Number(e.target.value));
+                setSelectedDept(dept || null);
+              }}
+            >
+              <option value=''>選擇{selectedOrgType === 'DEPARTMENT' ? '部門' : '門市'}</option>
+              {departments
+                .filter(d => d.type === selectedOrgType)
+                .map(d => <option key={d.id} value={d.id}>{d.name} ({d.schedule_type === 'FIXED' ? '固定制' : '排班制'})</option>)}
+            </select>
+          )}
         </div>
       </div>
 
@@ -426,6 +487,18 @@ const SchedulePage = () => {
               </div>
             ))}
             
+            {/* Custom Time Shift */}
+            <div
+              draggable
+              onDragStart={e => handleDragStart(e, -1)}
+              className='p-3 rounded cursor-move text-center font-medium transition hover:shadow-md bg-gradient-to-r from-indigo-100 to-purple-100 text-indigo-800 border-2 border-dashed border-indigo-300'
+            >
+              <div className='font-bold'>⏰ 自訂時間</div>
+              <div className='text-xs mt-1 opacity-80'>
+                拖曳後輸入時間
+              </div>
+            </div>
+            
             <div className='mt-auto pt-4 border-t'>
               {(userRole === 'ADMIN' || userRole === 'MANAGER') && (
                 <button 
@@ -490,9 +563,16 @@ const SchedulePage = () => {
                               onDrop={e => handleDrop(e, emp.id, d)}
                             >
                               {entry ? (
-                                <div className={`h-full rounded flex items-center justify-center text-xs font-bold cursor-pointer ${entry.color} shadow-sm`}>
-                                  {entry.shift_name}
-                                </div>
+                                entry.custom_time_start ? (
+                                  <div className='h-full rounded flex flex-col items-center justify-center text-xs font-bold cursor-pointer bg-gradient-to-r from-indigo-100 to-purple-100 text-indigo-800 shadow-sm border border-indigo-200'>
+                                    <div>⏰ 自訂</div>
+                                    <div>{formatTime(entry.custom_time_start)}-{formatTime(entry.custom_time_end)}</div>
+                                  </div>
+                                ) : (
+                                  <div className={`h-full rounded flex items-center justify-center text-xs font-bold cursor-pointer ${entry.color} shadow-sm`}>
+                                    {entry.shift_name}
+                                  </div>
+                                )
                               ) : (
                                 <div className='h-full w-full' />
                               )}
@@ -586,6 +666,51 @@ const SchedulePage = () => {
             <div className='flex justify-end gap-3 mt-6 pt-4 border-t'>
               <button onClick={() => setShowSettings(false)} className='px-4 py-2 text-gray-600 hover:bg-gray-100 rounded'>取消</button>
               <button onClick={handleSaveNewShifts} className='px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-2'><Save size={18} /> 儲存設定</button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Custom Time Modal */}
+      {showCustomTimeModal && (
+        <div className='fixed inset-0 bg-black/50 flex items-center justify-center z-50'>
+          <div className='bg-white rounded-xl shadow-2xl w-full max-w-md p-6'>
+            <div className='flex justify-between items-center mb-6'>
+              <h3 className='text-xl font-bold flex items-center gap-2'>⏰ 自訂上班時間</h3>
+              <button onClick={() => setShowCustomTimeModal(false)} className='p-2 hover:bg-gray-100 rounded'><X size={24} /></button>
+            </div>
+            
+            <div className='space-y-4'>
+              <div>
+                <label className='block text-sm font-medium text-gray-700 mb-2'>上班時間</label>
+                <input 
+                  type='time' 
+                  value={customTimeForm.start_time}
+                  onChange={e => setCustomTimeForm({ ...customTimeForm, start_time: e.target.value })}
+                  className='w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-lg'
+                />
+              </div>
+              
+              <div>
+                <label className='block text-sm font-medium text-gray-700 mb-2'>下班時間</label>
+                <input 
+                  type='time' 
+                  value={customTimeForm.end_time}
+                  onChange={e => setCustomTimeForm({ ...customTimeForm, end_time: e.target.value })}
+                  className='w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none text-lg'
+                />
+              </div>
+              
+              {customTimeData && (
+                <div className='bg-gray-50 p-3 rounded-lg text-sm text-gray-600'>
+                  <p>日期：{customTimeData.date}</p>
+                </div>
+              )}
+            </div>
+            
+            <div className='flex justify-end gap-3 mt-6 pt-4 border-t'>
+              <button onClick={() => setShowCustomTimeModal(false)} className='px-4 py-2 text-gray-600 hover:bg-gray-100 rounded'>取消</button>
+              <button onClick={handleSaveCustomTime} className='px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-2'><Save size={18} /> 儲存</button>
             </div>
           </div>
         </div>

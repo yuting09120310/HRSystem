@@ -13,8 +13,24 @@ const AdminPage = () => {
   const [showUserModal, setShowUserModal] = useState(false);
   const [showDeptModal, setShowDeptModal] = useState(false);
   const [editingUser, setEditingUser] = useState<any>(null);
-  const [userForm, setUserForm] = useState({ username: '', password: '', fullName: '', deptId: '', role: 'EMPLOYEE', status: 'ACTIVE' });
-  const [deptForm, setDeptForm] = useState({ name: '', scheduleType: 'FIXED' });
+  const [currentStep, setCurrentStep] = useState(1);
+  const [selectedOrgType, setSelectedOrgType] = useState<'DEPARTMENT' | 'STORE' | ''>('');
+  
+  const [userForm, setUserForm] = useState({ 
+    username: '', 
+    password: '', 
+    fullName: '', 
+    deptId: '', 
+    role: 'EMPLOYEE', 
+    status: 'ACTIVE', 
+    employmentType: 'FULL_TIME', 
+    position: '',
+    hourlyWage: '',
+    baseSalary: '',
+    professionalAllowance: '',
+    mealAllowance: ''
+  });
+  const [deptForm, setDeptForm] = useState({ name: '', scheduleType: 'FIXED', type: 'DEPARTMENT' });
 
   useEffect(() => {
     fetchData();
@@ -53,14 +69,95 @@ const AdminPage = () => {
 
   const openEditUser = (user: any) => {
     setEditingUser(user);
-    setUserForm({ username: user.username, password: '', fullName: user.full_name, deptId: user.dept_id, role: user.role, status: user.status });
+    setUserForm({ 
+      username: user.username, 
+      password: '', 
+      fullName: user.full_name, 
+      deptId: user.dept_id, 
+      role: user.role, 
+      status: user.status,
+      employmentType: user.employment_type || 'FULL_TIME',
+      position: user.position || '',
+      hourlyWage: user.hourly_wage || '',
+      baseSalary: user.base_salary || '',
+      professionalAllowance: user.professional_allowance || '',
+      mealAllowance: user.meal_allowance || ''
+    });
     setShowUserModal(true);
   };
 
   const openAddUser = () => {
     setEditingUser(null);
-    setUserForm({ username: '', password: '', fullName: '', deptId: departments[0]?.id || '', role: 'EMPLOYEE', status: 'ACTIVE' });
+    setCurrentStep(1);
+    setSelectedOrgType('');
+    setUserForm({ 
+      username: '', 
+      password: '', 
+      fullName: '', 
+      deptId: '', 
+      role: 'EMPLOYEE', 
+      status: 'ACTIVE', 
+      employmentType: 'FULL_TIME', 
+      position: '',
+      hourlyWage: '',
+      baseSalary: '',
+      professionalAllowance: '',
+      mealAllowance: ''
+    });
     setShowUserModal(true);
+  };
+
+  const validateStep = (step: number): boolean => {
+    if (step === 1) {
+      // Step 1: Personal info
+      if (!userForm.fullName) {
+        alert('請填寫姓名');
+        return false;
+      }
+      if (!editingUser && !userForm.username) {
+        alert('請填寫帳號');
+        return false;
+      }
+      if (!editingUser && !userForm.password) {
+        alert('請填寫密碼');
+        return false;
+      }
+      return true;
+    }
+    if (step === 2) {
+      // Step 2: Department & Type
+      if (!userForm.deptId) {
+        alert('請選擇部門');
+        return false;
+      }
+      return true;
+    }
+    if (step === 3) {
+      // Step 3: Salary structure
+      if (userForm.employmentType === 'PART_TIME') {
+        if (!userForm.hourlyWage) {
+          alert('請填寫時薪');
+          return false;
+        }
+      } else {
+        if (!userForm.baseSalary) {
+          alert('請填寫基本薪資');
+          return false;
+        }
+      }
+      return true;
+    }
+    return true;
+  };
+
+  const handleNextStep = () => {
+    if (validateStep(currentStep)) {
+      setCurrentStep(currentStep + 1);
+    }
+  };
+
+  const handlePrevStep = () => {
+    setCurrentStep(currentStep - 1);
   };
 
   const handleUpdateDeptManager = async (deptId: number, managerId: number | null) => {
@@ -77,7 +174,7 @@ const AdminPage = () => {
     try {
       await axios.post(`${API_BASE}/admin/departments`, deptForm);
       setShowDeptModal(false);
-      setDeptForm({ name: '', scheduleType: 'FIXED' });
+      setDeptForm({ name: '', scheduleType: 'FIXED', type: 'DEPARTMENT' });
       fetchData();
     } catch (e: any) {
       alert(e.response?.data?.error || '建立失敗');
@@ -116,6 +213,9 @@ const AdminPage = () => {
                   <th className='p-4'>帳號</th>
                   <th className='p-4'>姓名</th>
                   <th className='p-4'>部門</th>
+                  <th className='p-4'>僱用類型</th>
+                  <th className='p-4'>職位</th>
+                  <th className='p-4'>薪資結構</th>
                   <th className='p-4'>角色</th>
                   <th className='p-4'>狀態</th>
                   <th className='p-4 text-right'>操作</th>
@@ -127,6 +227,25 @@ const AdminPage = () => {
                     <td className='p-4 font-medium'>{u.username}</td>
                     <td className='p-4'>{u.full_name}</td>
                     <td className='p-4'>{u.dept_name || '-'}</td>
+                    <td className='p-4'>
+                      <span className={`px-2 py-1 rounded text-xs font-bold ${u.employment_type === 'PART_TIME' ? 'bg-orange-100 text-orange-700' : 'bg-green-100 text-green-700'}`}>
+                        {u.employment_type === 'PART_TIME' ? '工讀' : '正職'}
+                      </span>
+                    </td>
+                    <td className='p-4'>
+                      <span className='text-sm'>{u.position || '-'}</span>
+                    </td>
+                    <td className='p-4'>
+                      {u.employment_type === 'PART_TIME' ? (
+                        <span className='text-sm'>時薪 ${u.hourly_wage || 0}</span>
+                      ) : (
+                        <div className='text-xs'>
+                          <div>基本: ${u.base_salary || 0}</div>
+                          <div>加給: ${u.professional_allowance || 0}</div>
+                          <div>伙食: ${u.meal_allowance || 0}</div>
+                        </div>
+                      )}
+                    </td>
                     <td className='p-4'>
                       <span className={`px-2 py-1 rounded text-xs font-bold ${u.role === 'ADMIN' ? 'bg-purple-100 text-purple-700' : u.role === 'MANAGER' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>
                         {u.role === 'ADMIN' ? '管理員' : u.role === 'MANAGER' ? '主管' : '員工'}
@@ -189,50 +308,154 @@ const AdminPage = () => {
 
       {showUserModal && (
         <div className='fixed inset-0 bg-black/50 flex items-center justify-center z-50'>
-          <div className='bg-white rounded-xl shadow-2xl w-full max-w-md p-6'>
+          <div className='bg-white rounded-xl shadow-2xl w-full max-w-2xl p-6'>
             <h3 className='text-xl font-bold mb-4'>{editingUser ? '編輯人員' : '新增人員'}</h3>
-            <div className='space-y-4'>
-              <div>
-                <label className='block text-sm text-gray-500 mb-1'>帳號</label>
-                <input type='text' value={userForm.username} onChange={e => setUserForm({...userForm, username: e.target.value})} className='w-full p-2 border rounded' disabled={!!editingUser} />
+            
+            {/* Step Indicator */}
+            <div className='flex items-center justify-center mb-6'>
+              <div className={`flex items-center ${currentStep >= 1 ? 'text-blue-600' : 'text-gray-400'}`}>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${currentStep >= 1 ? 'bg-blue-600 text-white' : 'bg-gray-200'}`}>1</div>
+                <span className='ml-2 text-sm font-medium'>個資帳號</span>
               </div>
-              {!editingUser && (
-                <div>
-                  <label className='block text-sm text-gray-500 mb-1'>密碼</label>
-                  <input type='text' value={userForm.password} onChange={e => setUserForm({...userForm, password: e.target.value})} className='w-full p-2 border rounded' />
-                </div>
+              <div className={`w-16 h-1 mx-2 ${currentStep >= 2 ? 'bg-blue-600' : 'bg-gray-200'}`}></div>
+              <div className={`flex items-center ${currentStep >= 2 ? 'text-blue-600' : 'text-gray-400'}`}>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${currentStep >= 2 ? 'bg-blue-600 text-white' : 'bg-gray-200'}`}>2</div>
+                <span className='ml-2 text-sm font-medium'>部門職位</span>
+              </div>
+              <div className={`w-16 h-1 mx-2 ${currentStep >= 3 ? 'bg-blue-600' : 'bg-gray-200'}`}></div>
+              <div className={`flex items-center ${currentStep >= 3 ? 'text-blue-600' : 'text-gray-400'}`}>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center ${currentStep >= 3 ? 'bg-blue-600 text-white' : 'bg-gray-200'}`}>3</div>
+                <span className='ml-2 text-sm font-medium'>薪資結構</span>
+              </div>
+            </div>
+
+            <div className='space-y-4 min-h-[300px]'>
+              {/* Step 1: Personal Info */}
+              {currentStep === 1 && (
+                <>
+                  <h4 className='text-lg font-semibold text-gray-700 mb-4'>步驟 1：個人資訊與帳號</h4>
+                  <div>
+                    <label className='block text-sm text-gray-500 mb-1'>姓名 *</label>
+                    <input type='text' value={userForm.fullName} onChange={e => setUserForm({...userForm, fullName: e.target.value})} className='w-full p-2 border rounded' placeholder='請填寫真實姓名' />
+                  </div>
+                  <div>
+                    <label className='block text-sm text-gray-500 mb-1'>帳號 *</label>
+                    <input type='text' value={userForm.username} onChange={e => setUserForm({...userForm, username: e.target.value})} className='w-full p-2 border rounded' disabled={!!editingUser} placeholder='登入系統使用的帳號' />
+                  </div>
+                  {!editingUser && (
+                    <div>
+                      <label className='block text-sm text-gray-500 mb-1'>密碼 *</label>
+                      <input type='text' value={userForm.password} onChange={e => setUserForm({...userForm, password: e.target.value})} className='w-full p-2 border rounded' placeholder='請設定密碼' />
+                    </div>
+                  )}
+                </>
               )}
-              <div>
-                <label className='block text-sm text-gray-500 mb-1'>姓名</label>
-                <input type='text' value={userForm.fullName} onChange={e => setUserForm({...userForm, fullName: e.target.value})} className='w-full p-2 border rounded' />
-              </div>
-              <div>
-                <label className='block text-sm text-gray-500 mb-1'>部門</label>
-                <select value={userForm.deptId} onChange={e => setUserForm({...userForm, deptId: e.target.value})} className='w-full p-2 border rounded'>
-                  {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-                </select>
-              </div>
-              <div>
-                <label className='block text-sm text-gray-500 mb-1'>角色</label>
-                <select value={userForm.role} onChange={e => setUserForm({...userForm, role: e.target.value})} className='w-full p-2 border rounded'>
-                  <option value='EMPLOYEE'>員工</option>
-                  <option value='MANAGER'>主管</option>
-                  <option value='ADMIN'>管理員</option>
-                </select>
-              </div>
-              {editingUser && (
-                <div>
-                  <label className='block text-sm text-gray-500 mb-1'>狀態</label>
-                  <select value={userForm.status} onChange={e => setUserForm({...userForm, status: e.target.value})} className='w-full p-2 border rounded'>
-                    <option value='ACTIVE'>在職</option>
-                    <option value='RESIGNED'>離職</option>
-                  </select>
-                </div>
+
+              {/* Step 2: Department & Position */}
+              {currentStep === 2 && (
+                <>
+                  <h4 className='text-lg font-semibold text-gray-700 mb-4'>步驟 2：部門與職位</h4>
+                  <div>
+                    <label className='block text-sm text-gray-500 mb-1'>單位類型 *</label>
+                    <select 
+                      value={selectedOrgType} 
+                      onChange={e => {
+                        setSelectedOrgType(e.target.value as 'DEPARTMENT' | 'STORE' | '');
+                        setUserForm({...userForm, deptId: ''});
+                      }} 
+                      className='w-full p-2 border rounded'
+                    >
+                      <option value=''>請選擇單位類型</option>
+                      <option value='DEPARTMENT'>總公司部門</option>
+                      <option value='STORE'>門市</option>
+                    </select>
+                  </div>
+                  {selectedOrgType && (
+                    <div>
+                      <label className='block text-sm text-gray-500 mb-1'>
+                        {selectedOrgType === 'DEPARTMENT' ? '選擇部門' : '選擇門市'} *
+                      </label>
+                      <select 
+                        value={userForm.deptId} 
+                        onChange={e => setUserForm({...userForm, deptId: e.target.value})} 
+                        className='w-full p-2 border rounded'
+                      >
+                        <option value=''>請選擇{selectedOrgType === 'DEPARTMENT' ? '部門' : '門市'}</option>
+                        {departments
+                          .filter(d => d.type === selectedOrgType)
+                          .map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                      </select>
+                    </div>
+                  )}
+                  <div>
+                    <label className='block text-sm text-gray-500 mb-1'>僱用類型 *</label>
+                    <select value={userForm.employmentType} onChange={e => setUserForm({...userForm, employmentType: e.target.value})} className='w-full p-2 border rounded'>
+                      <option value='FULL_TIME'>正職</option>
+                      <option value='PART_TIME'>工讀 (PT)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className='block text-sm text-gray-500 mb-1'>職位名稱（選填）</label>
+                    <input type='text' value={userForm.position} onChange={e => setUserForm({...userForm, position: e.target.value})} className='w-full p-2 border rounded' placeholder='例如：資深工程師、專案經理' />
+                  </div>
+                  <div>
+                    <label className='block text-sm text-gray-500 mb-1'>系統角色</label>
+                    <select value={userForm.role} onChange={e => setUserForm({...userForm, role: e.target.value})} className='w-full p-2 border rounded'>
+                      <option value='EMPLOYEE'>員工</option>
+                      <option value='MANAGER'>主管</option>
+                      <option value='ADMIN'>管理員</option>
+                    </select>
+                  </div>
+                </>
+              )}
+
+              {/* Step 3: Salary Structure */}
+              {currentStep === 3 && (
+                <>
+                  <h4 className='text-lg font-semibold text-gray-700 mb-4'>步驟 3：薪資結構</h4>
+                  {userForm.employmentType === 'PART_TIME' ? (
+                    <div>
+                      <label className='block text-sm text-gray-500 mb-1'>時薪 (元) *</label>
+                      <input type='number' value={userForm.hourlyWage} onChange={e => setUserForm({...userForm, hourlyWage: e.target.value})} className='w-full p-2 border rounded' placeholder='例如：180' />
+                      <p className='text-xs text-gray-400 mt-1'>工讀生依實際工作時數計算薪資</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div>
+                        <label className='block text-sm text-gray-500 mb-1'>基本薪資 *</label>
+                        <input type='number' value={userForm.baseSalary} onChange={e => setUserForm({...userForm, baseSalary: e.target.value})} className='w-full p-2 border rounded' placeholder='例如：35000' />
+                      </div>
+                      <div>
+                        <label className='block text-sm text-gray-500 mb-1'>專業加給</label>
+                        <input type='number' value={userForm.professionalAllowance} onChange={e => setUserForm({...userForm, professionalAllowance: e.target.value})} className='w-full p-2 border rounded' placeholder='例如：5000' />
+                      </div>
+                      <div>
+                        <label className='block text-sm text-gray-500 mb-1'>伙食津貼</label>
+                        <input type='number' value={userForm.mealAllowance} onChange={e => setUserForm({...userForm, mealAllowance: e.target.value})} className='w-full p-2 border rounded' placeholder='例如：2000' />
+                      </div>
+                      <div className='bg-gray-50 p-3 rounded mt-4'>
+                        <p className='text-sm text-gray-600'>預計月薪：<span className='font-bold text-blue-600'>${(Number(userForm.baseSalary || 0) + Number(userForm.professionalAllowance || 0) + Number(userForm.mealAllowance || 0)).toLocaleString()}</span></p>
+                      </div>
+                    </>
+                  )}
+                </>
               )}
             </div>
-            <div className='flex justify-end gap-3 mt-6'>
-              <button onClick={() => setShowUserModal(false)} className='px-4 py-2 text-gray-600 hover:bg-gray-100 rounded'>取消</button>
-              <button onClick={handleSaveUser} className='px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-2'><Save size={18} /> 儲存</button>
+            
+            <div className='flex justify-between mt-6 pt-4 border-t'>
+              <div>
+                {currentStep > 1 && (
+                  <button onClick={handlePrevStep} className='px-4 py-2 text-gray-600 hover:bg-gray-100 rounded'>上一步</button>
+                )}
+              </div>
+              <div className='flex gap-3'>
+                <button onClick={() => setShowUserModal(false)} className='px-4 py-2 text-gray-600 hover:bg-gray-100 rounded'>取消</button>
+                {currentStep < 3 ? (
+                  <button onClick={handleNextStep} className='px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700'>下一步</button>
+                ) : (
+                  <button onClick={handleSaveUser} className='px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-2'><Save size={18} /> 完成建立</button>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -241,11 +464,18 @@ const AdminPage = () => {
       {showDeptModal && (
         <div className='fixed inset-0 bg-black/50 flex items-center justify-center z-50'>
           <div className='bg-white rounded-xl shadow-2xl w-full max-w-md p-6'>
-            <h3 className='text-xl font-bold mb-4'>新增部門/門市</h3>
+            <h3 className='text-xl font-bold mb-4'>新增單位</h3>
             <div className='space-y-4'>
               <div>
+                <label className='block text-sm text-gray-500 mb-1'>單位類型</label>
+                <select value={deptForm.type} onChange={e => setDeptForm({...deptForm, type: e.target.value})} className='w-full p-2 border rounded'>
+                  <option value='DEPARTMENT'>總公司部門</option>
+                  <option value='STORE'>門市</option>
+                </select>
+              </div>
+              <div>
                 <label className='block text-sm text-gray-500 mb-1'>名稱</label>
-                <input type='text' value={deptForm.name} onChange={e => setDeptForm({...deptForm, name: e.target.value})} className='w-full p-2 border rounded' placeholder='例如：忠孝店' />
+                <input type='text' value={deptForm.name} onChange={e => setDeptForm({...deptForm, name: e.target.value})} className='w-full p-2 border rounded' placeholder={deptForm.type === 'STORE' ? '例如：忠孝店' : '例如：資訊部'} />
               </div>
               <div>
                 <label className='block text-sm text-gray-500 mb-1'>班制類型</label>
