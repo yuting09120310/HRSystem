@@ -11,8 +11,10 @@ const AdminPage = () => {
   const [loading, setLoading] = useState(true);
 
   const [showUserModal, setShowUserModal] = useState(false);
+  const [showDeptModal, setShowDeptModal] = useState(false);
   const [editingUser, setEditingUser] = useState<any>(null);
   const [userForm, setUserForm] = useState({ username: '', password: '', fullName: '', deptId: '', role: 'EMPLOYEE', status: 'ACTIVE' });
+  const [deptForm, setDeptForm] = useState({ name: '', scheduleType: 'FIXED' });
 
   useEffect(() => {
     fetchData();
@@ -67,6 +69,18 @@ const AdminPage = () => {
       fetchData();
     } catch (e: any) {
       alert(e.response?.data?.error || '更新失敗');
+    }
+  };
+
+  const handleCreateDept = async () => {
+    if (!deptForm.name) return;
+    try {
+      await axios.post(`${API_BASE}/admin/departments`, deptForm);
+      setShowDeptModal(false);
+      setDeptForm({ name: '', scheduleType: 'FIXED' });
+      fetchData();
+    } catch (e: any) {
+      alert(e.response?.data?.error || '建立失敗');
     }
   };
 
@@ -135,28 +149,41 @@ const AdminPage = () => {
       )}
 
       {tab === 'departments' && (
-        <div className='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6'>
-          {departments.map(dept => (
-            <div key={dept.id} className='bg-white p-6 shadow rounded-xl'>
-              <h3 className='text-lg font-bold mb-4 flex items-center gap-2'><Building2 size={20} className='text-blue-600' /> {dept.name}</h3>
-              <div className='mb-4'>
-                <label className='block text-sm text-gray-500 mb-2'>部門最高管理員</label>
-                <select
-                  value={dept.manager_id || ''}
-                  onChange={e => handleUpdateDeptManager(dept.id, e.target.value ? parseInt(e.target.value) : null)}
-                  className='w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none'
-                >
-                  <option value=''>無</option>
-                  {users.filter(u => u.dept_id === dept.id && u.status === 'ACTIVE').map(u => (
-                    <option key={u.id} value={u.id}>{u.full_name} ({u.role === 'MANAGER' ? '主管' : '員工'})</option>
-                  ))}
-                </select>
+        <div>
+          <div className='flex justify-between items-center mb-6'>
+            <h3 className='text-xl font-semibold'>部門列表</h3>
+            <button onClick={() => setShowDeptModal(true)} className='flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700'>
+              <Plus size={18} /> 新增部門/門市
+            </button>
+          </div>
+          <div className='grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6'>
+            {departments.map(dept => (
+              <div key={dept.id} className='bg-white p-6 shadow rounded-xl relative'>
+                <div className='absolute top-4 right-4'>
+                  <span className={`px-2 py-1 rounded text-xs font-bold ${dept.schedule_type === 'SHIFT' ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 text-gray-600'}`}>
+                    {dept.schedule_type === 'SHIFT' ? '排班制' : '固定制'}
+                  </span>
+                </div>
+                <h3 className='text-lg font-bold mb-4 flex items-center gap-2'><Building2 size={20} className='text-blue-600' /> {dept.name}</h3>
+                <div className='mb-4'>
+                  <label className='block text-sm text-gray-500 mb-2'>部門最高管理員</label>
+                  <select
+                    value={dept.manager_id || ''}
+                    onChange={e => handleUpdateDeptManager(dept.id, e.target.value ? parseInt(e.target.value) : null)}
+                    className='w-full p-2 border rounded focus:ring-2 focus:ring-blue-500 outline-none'
+                  >
+                    <option value=''>無</option>
+                    {users.filter(u => u.dept_id === dept.id && u.status === 'ACTIVE').map(u => (
+                      <option key={u.id} value={u.id}>{u.full_name} ({u.role === 'MANAGER' ? '主管' : '員工'})</option>
+                    ))}
+                  </select>
+                </div>
+                {dept.manager_name && (
+                  <p className='text-sm text-gray-600'>當前管理員：<span className='font-medium'>{dept.manager_name}</span></p>
+                )}
               </div>
-              {dept.manager_name && (
-                <p className='text-sm text-gray-600'>當前管理員：<span className='font-medium'>{dept.manager_name}</span></p>
-              )}
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       )}
 
@@ -206,6 +233,31 @@ const AdminPage = () => {
             <div className='flex justify-end gap-3 mt-6'>
               <button onClick={() => setShowUserModal(false)} className='px-4 py-2 text-gray-600 hover:bg-gray-100 rounded'>取消</button>
               <button onClick={handleSaveUser} className='px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-2'><Save size={18} /> 儲存</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showDeptModal && (
+        <div className='fixed inset-0 bg-black/50 flex items-center justify-center z-50'>
+          <div className='bg-white rounded-xl shadow-2xl w-full max-w-md p-6'>
+            <h3 className='text-xl font-bold mb-4'>新增部門/門市</h3>
+            <div className='space-y-4'>
+              <div>
+                <label className='block text-sm text-gray-500 mb-1'>名稱</label>
+                <input type='text' value={deptForm.name} onChange={e => setDeptForm({...deptForm, name: e.target.value})} className='w-full p-2 border rounded' placeholder='例如：忠孝店' />
+              </div>
+              <div>
+                <label className='block text-sm text-gray-500 mb-1'>班制類型</label>
+                <select value={deptForm.scheduleType} onChange={e => setDeptForm({...deptForm, scheduleType: e.target.value})} className='w-full p-2 border rounded'>
+                  <option value='FIXED'>固定制 (如：資訊部)</option>
+                  <option value='SHIFT'>排班制 (如：門市)</option>
+                </select>
+              </div>
+            </div>
+            <div className='flex justify-end gap-3 mt-6'>
+              <button onClick={() => setShowDeptModal(false)} className='px-4 py-2 text-gray-600 hover:bg-gray-100 rounded'>取消</button>
+              <button onClick={handleCreateDept} className='px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-2'><Save size={18} /> 儲存</button>
             </div>
           </div>
         </div>

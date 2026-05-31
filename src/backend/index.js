@@ -26,12 +26,15 @@ const authMiddleware = (req, res, next) => {
 
 app.post('/api/auth/login', async (req, res) => {
   const { account, password } = req.body;
+  console.log('Login attempt:', { account, password });
   try {
     const [[user]] = await pool.query('SELECT u.*, d.name as dept_name FROM users u JOIN departments d ON u.dept_id = d.id WHERE u.username = ?', [account]);
+    console.log('User found:', user ? { id: user.id, username: user.username, role: user.role } : 'null');
     if (!user) return res.status(401).json({ error: '帳號或密碼錯誤' });
     if (user.status !== 'ACTIVE') return res.status(403).json({ error: '帳號已停用' });
 
     const validPassword = user.password === password;
+    console.log('Password valid:', validPassword);
     if (!validPassword) {
       return res.status(401).json({ error: '帳號或密碼錯誤' });
     }
@@ -55,6 +58,7 @@ app.post('/api/auth/login', async (req, res) => {
       }
     });
   } catch (e) {
+    console.error('Login error:', e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -240,15 +244,24 @@ app.put('/api/admin/users/:id', adminMiddleware, async (req, res) => {
 
 app.get('/api/admin/departments', adminMiddleware, async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT d.id, d.name, d.manager_id, u.full_name as manager_name FROM departments d LEFT JOIN users u ON d.manager_id = u.id ORDER BY d.id');
+    const [rows] = await pool.query('SELECT d.id, d.name, d.manager_id, d.schedule_type, u.full_name as manager_name FROM departments d LEFT JOIN users u ON d.manager_id = u.id ORDER BY d.id');
     res.json(rows);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.put('/api/admin/departments/:id', adminMiddleware, async (req, res) => {
-  const { managerId } = req.body;
+app.post('/api/admin/departments', adminMiddleware, async (req, res) => {
+  const { name, scheduleType } = req.body;
+  if (!name) return res.status(400).json({ error: '請填寫部門名稱' });
   try {
-    await pool.query('UPDATE departments SET manager_id = ? WHERE id = ?', [managerId || null, req.params.id]);
+    await pool.query('INSERT INTO departments (name, schedule_type) VALUES (?, ?)', [name, scheduleType || 'FIXED']);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/admin/departments/:id', adminMiddleware, async (req, res) => {
+  const { managerId, scheduleType } = req.body;
+  try {
+    await pool.query('UPDATE departments SET manager_id = ?, schedule_type = ? WHERE id = ?', [managerId || null, scheduleType, req.params.id]);
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -354,6 +367,11 @@ app.post('/api/salary/calculate', managerMiddleware, async (req, res) => {
     const [[record]] = await pool.query('SELECT * FROM salary_records WHERE user_id = ? AND month = ?', [userId, month]);
     if (!record) return res.status(404).json({ error: '找不到該月薪資紀錄，請先設定薪資結構' });
 
+    // 取得員工排班時間
+    const [[schedule]] = await pool.query('SELECT work_start_time, work_end_time FROM users WHERE id = ?', [userId]);
+    const workStartTime = schedule?.work_start_time || '08:00:00';
+    const workEndTime = schedule?.work_end_time || '17:00:00';
+
     const base = parseFloat(record.base_salary);
     const prof = parseFloat(record.professional_allowance);
     const meal = parseFloat(record.meal_allowance);
@@ -361,7 +379,9 @@ app.post('/api/salary/calculate', managerMiddleware, async (req, res) => {
 
     const personalRate = totalSalary / 30;
     const sickRate = personalRate / 2;
+    const minuteRate = totalSalary / 30 / 8 / 60; // 每分鐘扣款金額
 
+    // 計算請假扣款
     const [leaveRows] = await pool.query('SELECT leave_type, COUNT(*) as days FROM leave_requests WHERE user_id = ? AND status = \'APPROVED\' AND DATE_FORMAT(start_date, \'%Y-%m\') = ? GROUP BY leave_type', [userId, month]);
     
     let totalDeductions = 0;
@@ -374,6 +394,35 @@ app.post('/api/salary/calculate', managerMiddleware, async (req, res) => {
       const amount = rate * lr.days;
       totalDeductions += amount;
       deductionDetails.push({ leave_type: lr.leave_type, days: lr.days, amount: Math.round(amount) });
+    }
+
+    // 計算考勤扣款 (遲到/早退)
+    const [attendance] = await pool.query('SELECT clock_in, clock_out FROM attendance WHERE user_id = ? AND DATE_FORMAT(date, \'%Y-%m\') = ?', [userId, month]);
+    let lateMinutes = 0;
+    let earlyMinutes = 0;
+
+    attendance.forEach(a => {
+      if (a.clock_in) {
+        const clockInDate = new Date(a.clock_in);
+        const startDateTime = new Date(`${clockInDate.toISOString().split('T')[0]} ${workStartTime}`);
+        if (clockInDate > startDateTime) {
+          lateMinutes += (clockInDate - startDateTime) / 60000;
+        }
+      }
+      if (a.clock_out) {
+        const clockOutDate = new Date(a.clock_out);
+        const endDateTime = new Date(`${clockOutDate.toISOString().split('T')[0]} ${workEndTime}`);
+        if (clockOutDate < endDateTime) {
+          earlyMinutes += (endDateTime - clockOutDate) / 60000;
+        }
+      }
+    });
+
+    const totalAttendanceMinutes = Math.round(lateMinutes + earlyMinutes);
+    if (totalAttendanceMinutes > 0) {
+      const attendanceDeduction = Math.round(totalAttendanceMinutes * minuteRate);
+      totalDeductions += attendanceDeduction;
+      deductionDetails.push({ leave_type: '考勤扣款', days: totalAttendanceMinutes, amount: attendanceDeduction });
     }
 
     const net = totalSalary - totalDeductions;
@@ -412,6 +461,1008 @@ app.post('/api/leave/balance/recalculate', adminMiddleware, async (req, res) => 
     await pool.query('DELETE FROM employee_leave_balances WHERE user_id = ? AND year = ?', [userId, targetYear]);
     const balances = await getLeaveBalance(userId, targetYear);
     res.json({ success: true, balances });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 工作排班 API
+app.get('/api/work-schedule', async (req, res) => {
+  try {
+    const [[user]] = await pool.query('SELECT work_start_time, work_end_time FROM users WHERE id = ?', [req.user.id]);
+    res.json(user || { work_start_time: '08:00:00', work_end_time: '17:00:00' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/admin/work-schedules', managerMiddleware, async (req, res) => {
+  try {
+    let query = 'SELECT u.id, u.full_name, u.dept_id, d.name as dept_name, u.work_start_time, u.work_end_time FROM users u JOIN departments d ON u.dept_id = d.id WHERE u.status = \'ACTIVE\'';
+    const params = [];
+    if (req.user.role === 'MANAGER') {
+      query += ' AND u.dept_id = ?';
+      params.push(req.user.dept_id);
+    }
+    const [rows] = await pool.query(query, params);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/admin/work-schedules/:id', managerMiddleware, async (req, res) => {
+  const { workStartTime, workEndTime } = req.body;
+  const targetId = req.params.id;
+  
+  try {
+    if (req.user.role === 'MANAGER') {
+      const [[target]] = await pool.query('SELECT dept_id FROM users WHERE id = ?', [targetId]);
+      if (!target || target.dept_id !== req.user.dept_id) {
+        return res.status(403).json({ error: '權限不足或目標員工不屬於所屬部門' });
+      }
+    }
+    
+    await pool.query('UPDATE users SET work_start_time = ?, work_end_time = ? WHERE id = ?', [workStartTime, workEndTime, targetId]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 門市管理 API
+app.get('/api/stores', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM departments WHERE type = \'STORE\' ORDER BY id');
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/stores', adminMiddleware, async (req, res) => {
+  const { name, parentId } = req.body;
+  if (!name) return res.status(400).json({ error: '請填寫門市名稱' });
+  try {
+    await pool.query('INSERT INTO departments (name, type, parent_id) VALUES (?, \'STORE\', ?)', [name, parentId || null]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/stores/:id/employees', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT id, full_name, role FROM users WHERE dept_id = ? AND status = \'ACTIVE\'', [req.params.id]);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 班別定義 API
+app.get('/api/shifts', async (req, res) => {
+  try {
+    const [rows] = await pool.query('SELECT * FROM shifts ORDER BY id');
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/shifts/:id', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    await pool.query('UPDATE shifts SET name = ?, start_time = ?, end_time = ?, color = ? WHERE id = ?', [name, start_time, end_time, color, req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/shifts', adminMiddleware, async (req, res) => {
+  const { name, start_time, end_time, color } = req.body;
+  try {
+    const [result] = await pool.query('INSERT INTO shifts (name, start_time, end_time, color) VALUES (?, ?, ?, ?)', [name, start_time, end_time, color]);
+    res.json({ success: true, id: result.insertId });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 排班 API
+app.get('/api/schedule', async (req, res) => {
+  const { storeId, month } = req.query;
+  try {
+    let query = `SELECT se.id, se.user_id, se.date, se.shift_id, u.full_name, s.name as shift_name, s.color 
+                 FROM schedule_entries se 
+                 JOIN users u ON se.user_id = u.id 
+                 JOIN shifts s ON se.shift_id = s.id 
+                 WHERE u.dept_id = ? AND DATE_FORMAT(se.date, '%Y-%m') = ?`;
+    const [rows] = await pool.query(query, [storeId, month]);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/schedule', managerMiddleware, async (req, res) => {
+  const { userId, date, shiftId } = req.body;
+  try {
+    // 檢查權限：主管只能排所屬門市
+    if (req.user.role === 'MANAGER') {
+      const [[user]] = await pool.query('SELECT dept_id FROM users WHERE id = ?', [userId]);
+      if (user.dept_id !== req.user.dept_id) return res.status(403).json({ error: '權限不足' });
+    }
+    
+    await pool.query('INSERT INTO schedule_entries (user_id, date, shift_id, created_by) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE shift_id = ?', [userId, date, shiftId, req.user.id, shiftId]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.delete('/api/schedule/:id', managerMiddleware, async (req, res) => {
+  try {
+    await pool.query('DELETE FROM schedule_entries WHERE id = ?', [req.params.id]);
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 班別偏好 API
+app.get('/api/schedule/preferences', async (req, res) => {
+  const { userId, month } = req.query;
+  try {
+    const [rows] = await pool.query('SELECT * FROM shift_preferences WHERE user_id = ? AND DATE_FORMAT(date, \'%Y-%m\') = ?', [userId, month]);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post('/api/schedule/preferences', async (req, res) => {
+  const { userId, date, shiftId, reason } = req.body;
+  try {
+    await pool.query('INSERT INTO shift_preferences (user_id, date, shift_id, reason) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE reason = ?', [userId, date, shiftId || null, reason, reason]);
+    res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 

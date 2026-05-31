@@ -69,7 +69,7 @@ const SalaryPage = () => {
                     <div className='space-y-2'>
                       {r.deductions.map((d: any, i: number) => (
                         <div key={i} className='flex justify-between text-red-600'>
-                          <span>{d.leave_type} ({d.days}日)</span>
+                          <span>{d.leave_type} ({d.days}{d.leave_type === '考勤扣款' ? '分鐘' : '日'})</span>
                           <span>-${d.amount}</span>
                         </div>
                       ))}

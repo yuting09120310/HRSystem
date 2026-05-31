@@ -8,6 +8,7 @@ import AdminPage from './AdminPage';
 import SalaryPage from './SalaryPage';
 import SalaryManagementPage from './SalaryManagementPage';
 import LeaveBalancePage from './LeaveBalancePage';
+import SchedulePage from './SchedulePage';
 
 const API_BASE = 'http://localhost:3001/api';
 
@@ -81,6 +82,9 @@ const App = () => {
           <p className='text-xs text-gray-500 uppercase tracking-wider px-3 mb-1'>主要功能</p>
           <button onClick={() => setView('punch')} className={`p-3 rounded flex items-center gap-2 transition text-left ${view === 'punch' ? 'bg-slate-700' : 'hover:bg-slate-800'}`}><Clock size={20}/> 打卡系統</button>
           <button onClick={() => setView('leave')} className={`p-3 rounded flex items-center gap-2 transition text-left ${view === 'leave' ? 'bg-slate-700' : 'hover:bg-slate-800'}`}><Calendar size={20}/> 請假申請</button>
+          {(user.role === 'MANAGER' || user.role === 'ADMIN') && (
+            <button onClick={() => setView('schedule')} className={`p-3 rounded flex items-center gap-2 transition text-left ${view === 'schedule' ? 'bg-slate-700' : 'hover:bg-slate-800'}`}><Calendar size={20}/> 排班系統</button>
+          )}
           <button onClick={() => setView('balance')} className={`p-3 rounded flex items-center gap-2 transition text-left ${view === 'balance' ? 'bg-slate-700' : 'hover:bg-slate-800'}`}><Calendar size={20}/> 假別餘額</button>
           {(user.role === 'MANAGER' || user.role === 'ADMIN') && (
             <button onClick={() => setView('approval')} className={`p-3 rounded flex items-center gap-2 transition text-left ${view === 'approval' ? 'bg-slate-700' : 'hover:bg-slate-800'}`}><User size={20}/> 簽核管理</button>
@@ -118,6 +122,7 @@ const App = () => {
       <main className='flex-1 p-10 overflow-auto'>
         {view === 'punch' && <PunchView userId={user.id} />}
         {view === 'leave' && <LeaveView userId={user.id} user={user} />}
+        {view === 'schedule' && <SchedulePage />}
         {view === 'balance' && <LeaveBalancePage />}
         {view === 'approval' && <AdminView userId={user.id} />}
         {view === 'salary' && <SalaryPage />}
