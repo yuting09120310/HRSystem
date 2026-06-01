@@ -3,7 +3,7 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const pool = require('./db');
-const { LEAVE_RULES, getLeaveBalance } = require('./leave_service');
+const { LEAVE_RULES, getLeaveBalance, getCurrentAnniversarySpecialLeave, updateDailySpecialLeave, resetAnnualLeaveBalances } = require('./leave_service');
 require('dotenv').config({ path: './src/backend/.env' });
 
 const app = express();
@@ -249,12 +249,15 @@ app.get('/api/admin/users', adminMiddleware, async (req, res) => {
 
 app.post('/api/admin/users', adminMiddleware, async (req, res) => {
   const { username, password, fullName, deptId, role, hireDate, employmentType, position, hourlyWage, baseSalary, professionalAllowance, mealAllowance, educationLevel, universityName, department } = req.body;
-  if (!username || !password || !fullName || !deptId) return res.status(400).json({ error: '請填寫所有必填欄位' });
+  if (!username || !password || !fullName) return res.status(400).json({ error: '請填寫所有必填欄位' });
+  // ADMIN 角色不需要部門，其他角色需要
+  if (role !== 'ADMIN' && !deptId) return res.status(400).json({ error: '請選擇部門' });
   try {
     const [[existing]] = await pool.query('SELECT id FROM users WHERE username = ?', [username]);
     if (existing) return res.status(400).json({ error: '帳號已存在' });
     
-    const [result] = await pool.query('INSERT INTO users (username, password, full_name, dept_id, role, status, hire_date, employment_type, position, hourly_wage, base_salary, professional_allowance, meal_allowance, education_level, university_name, department) VALUES (?, ?, ?, ?, ?, \'ACTIVE\', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [username, password, fullName, deptId, role || 'EMPLOYEE', hireDate || new Date().toISOString().split('T')[0], employmentType || 'FULL_TIME', position || null, hourlyWage || null, baseSalary || null, professionalAllowance || null, mealAllowance || null, educationLevel || null, universityName || null, department || null]);
+    const finalHireDate = hireDate || new Date().toISOString().split('T')[0];
+    const [result] = await pool.query('INSERT INTO users (username, password, full_name, dept_id, role, status, hire_date, employment_type, position, hourly_wage, base_salary, professional_allowance, meal_allowance, education_level, university_name, department) VALUES (?, ?, ?, ?, ?, \'ACTIVE\', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [username, password, fullName, deptId || null, role || 'EMPLOYEE', finalHireDate, employmentType || 'FULL_TIME', position || null, hourlyWage || null, baseSalary || null, professionalAllowance || null, mealAllowance || null, educationLevel || null, universityName || null, department || null]);
     
     const newUserId = result.insertId;
     
@@ -264,6 +267,28 @@ app.post('/api/admin/users', adminMiddleware, async (req, res) => {
       await pool.query('INSERT INTO salary_records (user_id, month, base_salary, professional_allowance, meal_allowance, status) VALUES (?, ?, ?, ?, ?, \'DRAFT\') ON DUPLICATE KEY UPDATE base_salary = ?, professional_allowance = ?, meal_allowance = ?', [newUserId, month, baseSalary, professionalAllowance || 0, mealAllowance || 0, baseSalary, professionalAllowance || 0, mealAllowance || 0]);
     }
     
+    // 自動建立休假餘額記錄
+    const currentYear = new Date().getFullYear();
+    
+    // 特休：週年制（依照到職日計算）
+    const specialDays = getCurrentAnniversarySpecialLeave(finalHireDate, new Date());
+    if (specialDays > 0) {
+      await pool.query(
+        'INSERT INTO employee_leave_balances (user_id, year, leave_type, total_days, used_days) VALUES (?, ?, ?, ?, 0)',
+        [newUserId, currentYear, '特休', specialDays]
+      );
+    }
+    
+    // 其他假別：曆年制（每年1/1重置）
+    for (const rule of LEAVE_RULES) {
+      if (rule.days > 0) {
+        await pool.query(
+          'INSERT INTO employee_leave_balances (user_id, year, leave_type, total_days, used_days) VALUES (?, ?, ?, ?, 0)',
+          [newUserId, currentYear, rule.type, rule.days]
+        );
+      }
+    }
+    
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -271,7 +296,9 @@ app.post('/api/admin/users', adminMiddleware, async (req, res) => {
 app.put('/api/admin/users/:id', adminMiddleware, async (req, res) => {
   const { fullName, deptId, role, status, hireDate, employmentType, position, educationLevel, universityName, department } = req.body;
   try {
-    await pool.query('UPDATE users SET full_name = ?, dept_id = ?, role = ?, status = ?, hire_date = ?, employment_type = ?, position = ?, education_level = ?, university_name = ?, department = ? WHERE id = ?', [fullName, deptId, role, status, hireDate, employmentType, position, educationLevel, universityName, department, req.params.id]);
+    // ADMIN 角色可以不選擇部門
+    const finalDeptId = role === 'ADMIN' ? null : deptId;
+    await pool.query('UPDATE users SET full_name = ?, dept_id = ?, role = ?, status = ?, hire_date = ?, employment_type = ?, position = ?, education_level = ?, university_name = ?, department = ? WHERE id = ?', [fullName, finalDeptId, role, status, hireDate, employmentType, position, educationLevel, universityName, department, req.params.id]);
     
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1582,4 +1609,61 @@ app.post('/api/schedule/preferences', async (req, res) => {
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log('Server running on port ' + PORT);
+  
+  // 延遲執行排程任務設定，避免影響啟動速度
+  setTimeout(() => {
+    // 每日排程任務：更新特休天數（週年制，每日滾算）
+    // 每天早上 00:05 執行
+    const scheduleDailyUpdate = () => {
+      const now = new Date();
+      const nextRun = new Date(now);
+      nextRun.setHours(0, 5, 0, 0);
+      
+      // 如果今天的 00:05 已經過了，就設定為明天的 00:05
+      if (now > nextRun) {
+        nextRun.setDate(nextRun.getDate() + 1);
+      }
+      
+      const timeUntilNextRun = nextRun - now;
+      
+      setTimeout(() => {
+        updateDailySpecialLeave().catch(console.error);
+        
+        // 之後每 24 小時執行一次
+        setInterval(() => {
+          updateDailySpecialLeave().catch(console.error);
+        }, 24 * 60 * 60 * 1000);
+      }, timeUntilNextRun);
+      
+      console.log(`排程任務已設定：下次執行時間 ${nextRun.toISOString()}`);
+    };
+    
+    // 每年1/1重置曆年制假別
+    const scheduleAnnualReset = () => {
+      const now = new Date();
+      const nextYear = now.getFullYear() + 1;
+      const nextReset = new Date(nextYear, 0, 1, 0, 10, 0, 0); // 1/1 00:10
+      
+      const timeUntilNextReset = nextReset - now;
+      
+      setTimeout(() => {
+        resetAnnualLeaveBalances().catch(console.error);
+        
+        // 之後每年執行一次
+        setInterval(() => {
+          resetAnnualLeaveBalances().catch(console.error);
+        }, 365 * 24 * 60 * 60 * 1000);
+      }, timeUntilNextReset);
+      
+      console.log(`年度重置任務已設定：下次執行時間 ${nextReset.toISOString()}`);
+    };
+    
+    scheduleDailyUpdate();
+    scheduleAnnualReset();
+    
+    // 延遲 5 秒後執行特休更新，避免影響啟動速度
+    setTimeout(() => {
+      updateDailySpecialLeave().catch(console.error);
+    }, 5000);
+  }, 1000);
 });

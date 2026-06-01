@@ -73,12 +73,17 @@ const AdminPage = () => {
   const openEditUser = (user: any) => {
     setEditingUser(user);
     setCurrentStep(1);
-    setSelectedOrgType(user.currentSalary ? (departments.find(d => d.id === user.dept_id)?.type || '') : '');
+    // 管理員不需要部門，直接設定為空
+    if (user.role === 'ADMIN') {
+      setSelectedOrgType('');
+    } else {
+      setSelectedOrgType(departments.find(d => d.id === user.dept_id)?.type || '');
+    }
     setUserForm({ 
       username: user.username, 
       password: '', 
       fullName: user.full_name, 
-      deptId: user.dept_id, 
+      deptId: user.dept_id || '', 
       role: user.role, 
       status: user.status,
       employmentType: user.employment_type || 'FULL_TIME',
@@ -137,7 +142,8 @@ const AdminPage = () => {
     }
     if (step === 2) {
       // Step 2: Department & Type
-      if (!userForm.deptId) {
+      // ADMIN 角色不需要選擇部門
+      if (userForm.role !== 'ADMIN' && !userForm.deptId) {
         alert('請選擇部門');
         return false;
       }
@@ -245,7 +251,7 @@ const AdminPage = () => {
                   <tr key={u.id} className='hover:bg-gray-50'>
                     <td className='p-4 font-medium'>{u.username}</td>
                     <td className='p-4'>{u.full_name}</td>
-                    <td className='p-4'>{u.dept_name || '-'}</td>
+                    <td className='p-4'>{u.dept_name || (u.role === 'ADMIN' ? '系統管理' : '-')}</td>
                     <td className='p-4'>
                       <span className={`px-2 py-1 rounded text-xs font-bold ${u.employment_type === 'PART_TIME' ? 'bg-orange-100 text-orange-700' : 'bg-green-100 text-green-700'}`}>
                         {u.employment_type === 'PART_TIME' ? '工讀' : '正職'}
@@ -266,8 +272,8 @@ const AdminPage = () => {
                       )}
                     </td>
                     <td className='p-4'>
-                      <span className={`px-2 py-1 rounded text-xs font-bold ${u.role === 'ADMIN' ? 'bg-purple-100 text-purple-700' : u.role === 'MANAGER' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>
-                        {u.role === 'ADMIN' ? '管理員' : u.role === 'MANAGER' ? '主管' : '員工'}
+                      <span className={`px-2 py-1 rounded text-xs font-bold ${u.role === 'ADMIN' ? 'bg-red-100 text-red-700' : u.role === 'MANAGER' ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600'}`}>
+                        {u.role === 'ADMIN' ? '系統管理員' : u.role === 'MANAGER' ? '部門主管' : '員工'}
                       </span>
                     </td>
                     <td className='p-4'>
@@ -384,37 +390,55 @@ const AdminPage = () => {
                 <>
                   <h4 className='text-lg font-semibold text-gray-700 mb-4'>步驟 2：部門與職位</h4>
                   <div>
-                    <label className='block text-sm text-gray-500 mb-1'>單位類型 *</label>
-                    <select 
-                      value={selectedOrgType} 
-                      onChange={e => {
-                        setSelectedOrgType(e.target.value as 'DEPARTMENT' | 'STORE' | '');
-                        setUserForm({...userForm, deptId: ''});
-                      }} 
-                      className='w-full p-2 border rounded'
-                      disabled={!!editingUser}
-                    >
-                      <option value=''>請選擇單位類型</option>
-                      <option value='DEPARTMENT'>總公司部門</option>
-                      <option value='STORE'>門市</option>
+                    <label className='block text-sm text-gray-500 mb-1'>系統角色</label>
+                    <select value={userForm.role} onChange={e => {
+                      const newRole = e.target.value;
+                      setUserForm({...userForm, role: newRole, deptId: newRole === 'ADMIN' ? '' : userForm.deptId});
+                      if (newRole === 'ADMIN') {
+                        setSelectedOrgType('');
+                      }
+                    }} className='w-full p-2 border rounded'>
+                      <option value='EMPLOYEE'>員工</option>
+                      <option value='MANAGER'>部門主管</option>
+                      <option value='ADMIN'>系統管理員（最高權限，不限部門）</option>
                     </select>
                   </div>
-                  {selectedOrgType && (
-                    <div>
-                      <label className='block text-sm text-gray-500 mb-1'>
-                        {selectedOrgType === 'DEPARTMENT' ? '選擇部門' : '選擇門市'} *
-                      </label>
-                      <select 
-                        value={userForm.deptId} 
-                        onChange={e => setUserForm({...userForm, deptId: e.target.value})} 
-                        className='w-full p-2 border rounded'
-                      >
-                        <option value=''>請選擇{selectedOrgType === 'DEPARTMENT' ? '部門' : '門市'}</option>
-                        {departments
-                          .filter(d => d.type === selectedOrgType)
-                          .map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
-                      </select>
-                    </div>
+                  {userForm.role !== 'ADMIN' && (
+                    <>
+                      <div>
+                        <label className='block text-sm text-gray-500 mb-1'>單位類型 *</label>
+                        <select 
+                          value={selectedOrgType} 
+                          onChange={e => {
+                            setSelectedOrgType(e.target.value as 'DEPARTMENT' | 'STORE' | '');
+                            setUserForm({...userForm, deptId: ''});
+                          }} 
+                          className='w-full p-2 border rounded'
+                          disabled={!!editingUser}
+                        >
+                          <option value=''>請選擇單位類型</option>
+                          <option value='DEPARTMENT'>總公司部門</option>
+                          <option value='STORE'>門市</option>
+                        </select>
+                      </div>
+                      {selectedOrgType && (
+                        <div>
+                          <label className='block text-sm text-gray-500 mb-1'>
+                            {selectedOrgType === 'DEPARTMENT' ? '選擇部門' : '選擇門市'} *
+                          </label>
+                          <select 
+                            value={userForm.deptId} 
+                            onChange={e => setUserForm({...userForm, deptId: e.target.value})} 
+                            className='w-full p-2 border rounded'
+                          >
+                            <option value=''>請選擇{selectedOrgType === 'DEPARTMENT' ? '部門' : '門市'}</option>
+                            {departments
+                              .filter(d => d.type === selectedOrgType)
+                              .map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                          </select>
+                        </div>
+                      )}
+                    </>
                   )}
                   <div>
                     <label className='block text-sm text-gray-500 mb-1'>僱用類型 *</label>
@@ -426,14 +450,6 @@ const AdminPage = () => {
                   <div>
                     <label className='block text-sm text-gray-500 mb-1'>職位名稱（選填）</label>
                     <input type='text' value={userForm.position} onChange={e => setUserForm({...userForm, position: e.target.value})} className='w-full p-2 border rounded' placeholder='例如：資深工程師、專案經理' />
-                  </div>
-                  <div>
-                    <label className='block text-sm text-gray-500 mb-1'>系統角色</label>
-                    <select value={userForm.role} onChange={e => setUserForm({...userForm, role: e.target.value})} className='w-full p-2 border rounded'>
-                      <option value='EMPLOYEE'>員工</option>
-                      <option value='MANAGER'>主管</option>
-                      <option value='ADMIN'>管理員</option>
-                    </select>
                   </div>
                 </>
               )}
