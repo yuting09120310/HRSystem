@@ -216,39 +216,82 @@ const adminMiddleware = (req, res, next) => {
   next();
 };
 
+const managerMiddleware = (req, res, next) => {
+  if (req.user.role !== 'ADMIN' && req.user.role !== 'MANAGER') return res.status(403).json({ error: '權限不足' });
+  next();
+};
+
 app.get('/api/admin/users', adminMiddleware, async (req, res) => {
   try {
-    const [rows] = await pool.query('SELECT u.id, u.username, u.full_name, u.role, u.status, u.dept_id, u.hire_date, u.employment_type, u.position, u.hourly_wage, u.base_salary, u.professional_allowance, u.meal_allowance, d.name as dept_name FROM users u LEFT JOIN departments d ON u.dept_id = d.id ORDER BY u.id');
-    res.json(rows);
+    const [rows] = await pool.query('SELECT u.id, u.username, u.full_name, u.role, u.status, u.dept_id, u.hire_date, u.employment_type, u.position, u.hourly_wage, u.base_salary, u.professional_allowance, u.meal_allowance, u.education_level, u.university_name, u.department, d.name as dept_name FROM users u LEFT JOIN departments d ON u.dept_id = d.id ORDER BY u.id');
+    
+    // 為每個用戶加入 currentSalary（從 salary_records 讀取）
+    const result = [];
+    for (const u of rows) {
+      const [records] = await pool.query('SELECT * FROM salary_records WHERE user_id = ? ORDER BY month DESC LIMIT 1', [u.id]);
+      
+      // 如果沒有 salary_records，使用 users 表的薪資結構
+      let currentSalary = records[0] || null;
+      if (!currentSalary && u.employment_type === 'FULL_TIME' && u.base_salary) {
+        currentSalary = {
+          base_salary: u.base_salary,
+          professional_allowance: u.professional_allowance || 0,
+          meal_allowance: u.meal_allowance || 0
+        };
+      }
+      
+      result.push({ ...u, currentSalary });
+    }
+    
+    res.json(result);
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/admin/users', adminMiddleware, async (req, res) => {
-  const { username, password, fullName, deptId, role, hireDate, employmentType, position, hourlyWage, baseSalary, professionalAllowance, mealAllowance } = req.body;
+  const { username, password, fullName, deptId, role, hireDate, employmentType, position, hourlyWage, baseSalary, professionalAllowance, mealAllowance, educationLevel, universityName, department } = req.body;
   if (!username || !password || !fullName || !deptId) return res.status(400).json({ error: '請填寫所有必填欄位' });
   try {
     const [[existing]] = await pool.query('SELECT id FROM users WHERE username = ?', [username]);
     if (existing) return res.status(400).json({ error: '帳號已存在' });
-    await pool.query('INSERT INTO users (username, password, full_name, dept_id, role, status, hire_date, employment_type, position, hourly_wage, base_salary, professional_allowance, meal_allowance) VALUES (?, ?, ?, ?, ?, \'ACTIVE\', ?, ?, ?, ?, ?, ?, ?)', [username, password, fullName, deptId, role || 'EMPLOYEE', hireDate || new Date().toISOString().split('T')[0], employmentType || 'FULL_TIME', position || null, hourlyWage || null, baseSalary || null, professionalAllowance || null, mealAllowance || null]);
+    
+    const [result] = await pool.query('INSERT INTO users (username, password, full_name, dept_id, role, status, hire_date, employment_type, position, hourly_wage, base_salary, professional_allowance, meal_allowance, education_level, university_name, department) VALUES (?, ?, ?, ?, ?, \'ACTIVE\', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', [username, password, fullName, deptId, role || 'EMPLOYEE', hireDate || new Date().toISOString().split('T')[0], employmentType || 'FULL_TIME', position || null, hourlyWage || null, baseSalary || null, professionalAllowance || null, mealAllowance || null, educationLevel || null, universityName || null, department || null]);
+    
+    const newUserId = result.insertId;
+    
+    // 如果是正職員工且有設定薪資結構，自動建立當月薪資紀錄
+    if (employmentType === 'FULL_TIME' && baseSalary) {
+      const month = new Date().toISOString().slice(0, 7);
+      await pool.query('INSERT INTO salary_records (user_id, month, base_salary, professional_allowance, meal_allowance, status) VALUES (?, ?, ?, ?, ?, \'DRAFT\') ON DUPLICATE KEY UPDATE base_salary = ?, professional_allowance = ?, meal_allowance = ?', [newUserId, month, baseSalary, professionalAllowance || 0, mealAllowance || 0, baseSalary, professionalAllowance || 0, mealAllowance || 0]);
+    }
+    
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.put('/api/admin/users/:id', adminMiddleware, async (req, res) => {
-  const { fullName, deptId, role, status, hireDate, employmentType, position, hourlyWage, baseSalary, professionalAllowance, mealAllowance } = req.body;
+  const { fullName, deptId, role, status, hireDate, employmentType, position, educationLevel, universityName, department } = req.body;
   try {
-    await pool.query('UPDATE users SET full_name = ?, dept_id = ?, role = ?, status = ?, hire_date = ?, employment_type = ?, position = ?, hourly_wage = ?, base_salary = ?, professional_allowance = ?, meal_allowance = ? WHERE id = ?', [fullName, deptId, role, status, hireDate, employmentType, position, hourlyWage, baseSalary, professionalAllowance, mealAllowance, req.params.id]);
+    await pool.query('UPDATE users SET full_name = ?, dept_id = ?, role = ?, status = ?, hire_date = ?, employment_type = ?, position = ?, education_level = ?, university_name = ?, department = ? WHERE id = ?', [fullName, deptId, role, status, hireDate, employmentType, position, educationLevel, universityName, department, req.params.id]);
+    
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get('/api/admin/departments', adminMiddleware, async (req, res) => {
+app.get('/api/admin/departments', managerMiddleware, async (req, res) => {
   const { type } = req.query;
   try {
     let query = 'SELECT d.id, d.name, d.manager_id, d.type, d.schedule_type, u.full_name as manager_name FROM departments d LEFT JOIN users u ON d.manager_id = u.id';
     const params = [];
     
-    if (type) {
+    // 主管只能看到自己管理的部門
+    if (req.user.role === 'MANAGER') {
+      query += ' WHERE d.id = ?';
+      params.push(req.user.dept_id);
+      if (type) {
+        query += ' AND d.type = ?';
+        params.push(type);
+      }
+    } else if (type) {
       query += ' WHERE d.type = ?';
       params.push(type);
     }
@@ -275,11 +318,6 @@ app.put('/api/admin/departments/:id', adminMiddleware, async (req, res) => {
     res.json({ success: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
-
-const managerMiddleware = (req, res, next) => {
-  if (req.user.role !== 'ADMIN' && req.user.role !== 'MANAGER') return res.status(403).json({ error: '權限不足' });
-  next();
-};
 
 app.get('/api/salary/config', async (req, res) => {
   try {
@@ -312,7 +350,7 @@ app.get('/api/salary/my', async (req, res) => {
 
 app.get('/api/salary/employees', managerMiddleware, async (req, res) => {
   try {
-    let query = 'SELECT u.id, u.username, u.full_name, u.role, u.dept_id, d.name as dept_name, d.manager_id FROM users u LEFT JOIN departments d ON u.dept_id = d.id WHERE u.status = \'ACTIVE\'';
+    let query = 'SELECT u.id, u.username, u.full_name, u.role, u.dept_id, u.employment_type, u.base_salary, u.professional_allowance, u.meal_allowance, u.hourly_wage, d.name as dept_name, d.manager_id FROM users u LEFT JOIN departments d ON u.dept_id = d.id WHERE u.status = \'ACTIVE\'';
     const params = [];
     if (req.user.role === 'MANAGER') {
       query += ' AND (u.dept_id = ? OR u.id = ?)';
@@ -323,7 +361,18 @@ app.get('/api/salary/employees', managerMiddleware, async (req, res) => {
     const result = [];
     for (const u of users) {
       const [records] = await pool.query('SELECT * FROM salary_records WHERE user_id = ? ORDER BY month DESC LIMIT 1', [u.id]);
-      result.push({ ...u, currentSalary: records[0] || null });
+      
+      // 如果沒有 salary_records，使用 users 表的薪資結構
+      let currentSalary = records[0] || null;
+      if (!currentSalary && u.employment_type === 'FULL_TIME' && u.base_salary) {
+        currentSalary = {
+          base_salary: u.base_salary,
+          professional_allowance: u.professional_allowance || 0,
+          meal_allowance: u.meal_allowance || 0
+        };
+      }
+      
+      result.push({ ...u, currentSalary });
     }
     res.json(result);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -369,13 +418,22 @@ app.get('/api/salary/history/me', async (req, res) => {
 app.post('/api/salary/calculate', managerMiddleware, async (req, res) => {
   const { userId, month } = req.body;
   try {
-    const [[user]] = await pool.query('SELECT dept_id, employment_type, hourly_wage FROM users WHERE id = ?', [userId]);
+    const [[user]] = await pool.query('SELECT dept_id, employment_type, hourly_wage, base_salary, professional_allowance, meal_allowance FROM users WHERE id = ?', [userId]);
     if (req.user.role === 'MANAGER' && user.dept_id !== req.user.dept_id) {
       return res.status(403).json({ error: '僅能計算所屬部門員工薪資' });
     }
 
-    const [[record]] = await pool.query('SELECT * FROM salary_records WHERE user_id = ? AND month = ?', [userId, month]);
-    if (!record) return res.status(404).json({ error: '找不到該月薪資紀錄，請先設定薪資結構' });
+    let [[record]] = await pool.query('SELECT * FROM salary_records WHERE user_id = ? AND month = ?', [userId, month]);
+    
+    // 如果沒有該月的薪資紀錄，嘗試從 users 表建立
+    if (!record) {
+      if (user.employment_type === 'FULL_TIME' && user.base_salary) {
+        await pool.query('INSERT INTO salary_records (user_id, month, base_salary, professional_allowance, meal_allowance, status) VALUES (?, ?, ?, ?, ?, \'DRAFT\')', [userId, month, user.base_salary, user.professional_allowance || 0, user.meal_allowance || 0]);
+        [[record]] = await pool.query('SELECT * FROM salary_records WHERE user_id = ? AND month = ?', [userId, month]);
+      } else {
+        return res.status(404).json({ error: '找不到該月薪資紀錄，請先設定薪資結構' });
+      }
+    }
 
     // 取得員工排班時間
     const [[schedule]] = await pool.query('SELECT work_start_time, work_end_time FROM users WHERE id = ?', [userId]);

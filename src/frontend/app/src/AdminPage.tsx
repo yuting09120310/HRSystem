@@ -28,7 +28,10 @@ const AdminPage = () => {
     hourlyWage: '',
     baseSalary: '',
     professionalAllowance: '',
-    mealAllowance: ''
+    mealAllowance: '',
+    educationLevel: '',
+    universityName: '',
+    department: ''
   });
   const [deptForm, setDeptForm] = useState({ name: '', scheduleType: 'FIXED', type: 'DEPARTMENT' });
 
@@ -69,6 +72,8 @@ const AdminPage = () => {
 
   const openEditUser = (user: any) => {
     setEditingUser(user);
+    setCurrentStep(1);
+    setSelectedOrgType(user.currentSalary ? (departments.find(d => d.id === user.dept_id)?.type || '') : '');
     setUserForm({ 
       username: user.username, 
       password: '', 
@@ -81,7 +86,10 @@ const AdminPage = () => {
       hourlyWage: user.hourly_wage || '',
       baseSalary: user.base_salary || '',
       professionalAllowance: user.professional_allowance || '',
-      mealAllowance: user.meal_allowance || ''
+      mealAllowance: user.meal_allowance || '',
+      educationLevel: user.education_level || '',
+      universityName: user.university_name || '',
+      department: user.department || ''
     });
     setShowUserModal(true);
   };
@@ -102,7 +110,10 @@ const AdminPage = () => {
       hourlyWage: '',
       baseSalary: '',
       professionalAllowance: '',
-      mealAllowance: ''
+      mealAllowance: '',
+      educationLevel: '',
+      universityName: '',
+      department: ''
     });
     setShowUserModal(true);
   };
@@ -133,7 +144,11 @@ const AdminPage = () => {
       return true;
     }
     if (step === 3) {
-      // Step 3: Salary structure
+      // Step 3: Education - no required fields
+      return true;
+    }
+    if (step === 4 && !editingUser) {
+      // Step 4: Salary structure (only for new employees)
       if (userForm.employmentType === 'PART_TIME') {
         if (!userForm.hourlyWage) {
           alert('請填寫時薪');
@@ -148,6 +163,10 @@ const AdminPage = () => {
       return true;
     }
     return true;
+  };
+
+  const getMaxStep = () => {
+    return editingUser ? 3 : 4;
   };
 
   const handleNextStep = () => {
@@ -240,9 +259,9 @@ const AdminPage = () => {
                         <span className='text-sm'>時薪 ${u.hourly_wage || 0}</span>
                       ) : (
                         <div className='text-xs'>
-                          <div>基本: ${u.base_salary || 0}</div>
-                          <div>加給: ${u.professional_allowance || 0}</div>
-                          <div>伙食: ${u.meal_allowance || 0}</div>
+                          <div>基本: ${u.currentSalary?.base_salary || 0}</div>
+                          <div>加給: ${u.currentSalary?.professional_allowance || 0}</div>
+                          <div>伙食: ${u.currentSalary?.meal_allowance || 0}</div>
                         </div>
                       )}
                     </td>
@@ -317,16 +336,25 @@ const AdminPage = () => {
                 <div className={`w-8 h-8 rounded-full flex items-center justify-center ${currentStep >= 1 ? 'bg-blue-600 text-white' : 'bg-gray-200'}`}>1</div>
                 <span className='ml-2 text-sm font-medium'>個資帳號</span>
               </div>
-              <div className={`w-16 h-1 mx-2 ${currentStep >= 2 ? 'bg-blue-600' : 'bg-gray-200'}`}></div>
+              <div className={`w-12 h-1 mx-2 ${currentStep >= 2 ? 'bg-blue-600' : 'bg-gray-200'}`}></div>
               <div className={`flex items-center ${currentStep >= 2 ? 'text-blue-600' : 'text-gray-400'}`}>
                 <div className={`w-8 h-8 rounded-full flex items-center justify-center ${currentStep >= 2 ? 'bg-blue-600 text-white' : 'bg-gray-200'}`}>2</div>
                 <span className='ml-2 text-sm font-medium'>部門職位</span>
               </div>
-              <div className={`w-16 h-1 mx-2 ${currentStep >= 3 ? 'bg-blue-600' : 'bg-gray-200'}`}></div>
+              <div className={`w-12 h-1 mx-2 ${currentStep >= 3 ? 'bg-blue-600' : 'bg-gray-200'}`}></div>
               <div className={`flex items-center ${currentStep >= 3 ? 'text-blue-600' : 'text-gray-400'}`}>
                 <div className={`w-8 h-8 rounded-full flex items-center justify-center ${currentStep >= 3 ? 'bg-blue-600 text-white' : 'bg-gray-200'}`}>3</div>
-                <span className='ml-2 text-sm font-medium'>薪資結構</span>
+                <span className='ml-2 text-sm font-medium'>教育程度</span>
               </div>
+              {!editingUser && (
+                <>
+                  <div className={`w-12 h-1 mx-2 ${currentStep >= 4 ? 'bg-blue-600' : 'bg-gray-200'}`}></div>
+                  <div className={`flex items-center ${currentStep >= 4 ? 'text-blue-600' : 'text-gray-400'}`}>
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center ${currentStep >= 4 ? 'bg-blue-600 text-white' : 'bg-gray-200'}`}>4</div>
+                    <span className='ml-2 text-sm font-medium'>薪資結構</span>
+                  </div>
+                </>
+              )}
             </div>
 
             <div className='space-y-4 min-h-[300px]'>
@@ -364,6 +392,7 @@ const AdminPage = () => {
                         setUserForm({...userForm, deptId: ''});
                       }} 
                       className='w-full p-2 border rounded'
+                      disabled={!!editingUser}
                     >
                       <option value=''>請選擇單位類型</option>
                       <option value='DEPARTMENT'>總公司部門</option>
@@ -409,10 +438,39 @@ const AdminPage = () => {
                 </>
               )}
 
-              {/* Step 3: Salary Structure */}
+              {/* Step 3: Education */}
               {currentStep === 3 && (
                 <>
-                  <h4 className='text-lg font-semibold text-gray-700 mb-4'>步驟 3：薪資結構</h4>
+                  <h4 className='text-lg font-semibold text-gray-700 mb-4'>步驟 3：教育程度</h4>
+                  <div>
+                    <label className='block text-sm text-gray-500 mb-1'>教育程度</label>
+                    <select value={userForm.educationLevel} onChange={e => setUserForm({...userForm, educationLevel: e.target.value})} className='w-full p-2 border rounded'>
+                      <option value=''>請選擇</option>
+                      <option value='HIGH_SCHOOL'>高中</option>
+                      <option value='BACHELOR'>大學</option>
+                      <option value='MASTER'>碩士</option>
+                      <option value='PHD'>博士</option>
+                    </select>
+                  </div>
+                  {userForm.educationLevel === 'BACHELOR' && (
+                    <>
+                      <div>
+                        <label className='block text-sm text-gray-500 mb-1'>大學名稱</label>
+                        <input type='text' value={userForm.universityName} onChange={e => setUserForm({...userForm, universityName: e.target.value})} className='w-full p-2 border rounded' placeholder='例如：台灣大學' />
+                      </div>
+                      <div>
+                        <label className='block text-sm text-gray-500 mb-1'>科系</label>
+                        <input type='text' value={userForm.department} onChange={e => setUserForm({...userForm, department: e.target.value})} className='w-full p-2 border rounded' placeholder='例如：資訊工程學系' />
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+
+              {/* Step 4: Salary Structure (Only for new employees) */}
+              {currentStep === 4 && !editingUser && (
+                <>
+                  <h4 className='text-lg font-semibold text-gray-700 mb-4'>步驟 4：薪資結構</h4>
                   {userForm.employmentType === 'PART_TIME' ? (
                     <div>
                       <label className='block text-sm text-gray-500 mb-1'>時薪 (元) *</label>
@@ -450,10 +508,10 @@ const AdminPage = () => {
               </div>
               <div className='flex gap-3'>
                 <button onClick={() => setShowUserModal(false)} className='px-4 py-2 text-gray-600 hover:bg-gray-100 rounded'>取消</button>
-                {currentStep < 3 ? (
+                {currentStep < getMaxStep() ? (
                   <button onClick={handleNextStep} className='px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700'>下一步</button>
                 ) : (
-                  <button onClick={handleSaveUser} className='px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-2'><Save size={18} /> 完成建立</button>
+                  <button onClick={handleSaveUser} className='px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-2'><Save size={18} /> {editingUser ? '儲存變更' : '完成建立'}</button>
                 )}
               </div>
             </div>
