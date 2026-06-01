@@ -369,7 +369,28 @@ app.get('/api/salary/my', async (req, res) => {
     const result = [];
     for (const r of records) {
       const [details] = await pool.query('SELECT * FROM salary_deduction_details WHERE record_id = ?', [r.id]);
-      result.push({ ...r, deductions: details });
+      
+      // 判斷是否已過發放日
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const paymentDate = r.payment_date ? new Date(r.payment_date) : null;
+      if (paymentDate) {
+        paymentDate.setHours(0, 0, 0, 0);
+      }
+      
+      // 如果已到發放日且狀態為 UNPAID，自動改為已發放
+      let paidStatus = r.paid_status || 'UNPAID';
+      if (paymentDate && today >= paymentDate && paidStatus === 'UNPAID' && r.status === 'CALCULATED') {
+        await pool.query('UPDATE salary_records SET paid_status = \'PAID\', paid_date = NOW() WHERE id = ?', [r.id]);
+        paidStatus = 'PAID';
+      }
+      
+      result.push({ 
+        ...r, 
+        deductions: details,
+        paid_status: paidStatus,
+        payment_date: r.payment_date
+      });
     }
     res.json(result);
   } catch (e) { res.status(500).json({ error: e.message }); }
@@ -1606,64 +1627,35 @@ app.post('/api/schedule/preferences', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// 查詢特休到期通知
+app.get('/api/leave/expiry-notice', adminMiddleware, async (req, res) => {
+  const { warningDays = 30 } = req.query;
+  try {
+    const [results] = await pool.query('CALL sp_get_special_leave_expiry_notice(CURDATE(), ?)', [parseInt(warningDays)]);
+    res.json(results[0] || []);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 手動執行特休更新（管理員專用）
+app.post('/api/leave/update-special-leave', adminMiddleware, async (req, res) => {
+  try {
+    const [results] = await pool.query('CALL sp_update_daily_special_leave()');
+    res.json({ success: true, message: results[0] || {} });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// 手動執行年度重置（管理員專用）
+app.post('/api/leave/reset-annual-leave', adminMiddleware, async (req, res) => {
+  try {
+    const [results] = await pool.query('CALL sp_reset_annual_leave()');
+    res.json({ success: true, message: results[0] || {} });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log('Server running on port ' + PORT);
-  
-  // 延遲執行排程任務設定，避免影響啟動速度
-  setTimeout(() => {
-    // 每日排程任務：更新特休天數（週年制，每日滾算）
-    // 每天早上 00:05 執行
-    const scheduleDailyUpdate = () => {
-      const now = new Date();
-      const nextRun = new Date(now);
-      nextRun.setHours(0, 5, 0, 0);
-      
-      // 如果今天的 00:05 已經過了，就設定為明天的 00:05
-      if (now > nextRun) {
-        nextRun.setDate(nextRun.getDate() + 1);
-      }
-      
-      const timeUntilNextRun = nextRun - now;
-      
-      setTimeout(() => {
-        updateDailySpecialLeave().catch(console.error);
-        
-        // 之後每 24 小時執行一次
-        setInterval(() => {
-          updateDailySpecialLeave().catch(console.error);
-        }, 24 * 60 * 60 * 1000);
-      }, timeUntilNextRun);
-      
-      console.log(`排程任務已設定：下次執行時間 ${nextRun.toISOString()}`);
-    };
-    
-    // 每年1/1重置曆年制假別
-    const scheduleAnnualReset = () => {
-      const now = new Date();
-      const nextYear = now.getFullYear() + 1;
-      const nextReset = new Date(nextYear, 0, 1, 0, 10, 0, 0); // 1/1 00:10
-      
-      const timeUntilNextReset = nextReset - now;
-      
-      setTimeout(() => {
-        resetAnnualLeaveBalances().catch(console.error);
-        
-        // 之後每年執行一次
-        setInterval(() => {
-          resetAnnualLeaveBalances().catch(console.error);
-        }, 365 * 24 * 60 * 60 * 1000);
-      }, timeUntilNextReset);
-      
-      console.log(`年度重置任務已設定：下次執行時間 ${nextReset.toISOString()}`);
-    };
-    
-    scheduleDailyUpdate();
-    scheduleAnnualReset();
-    
-    // 延遲 5 秒後執行特休更新，避免影響啟動速度
-    setTimeout(() => {
-      updateDailySpecialLeave().catch(console.error);
-    }, 5000);
-  }, 1000);
+  console.log('✅ 休假計算已移至資料庫層 (Stored Procedures + Events)');
+  console.log('✅ 每日 00:10 自動更新特休 (MySQL Event Scheduler)');
+  console.log('✅ 每年 1/1 00:10 自動重置曆年制假別');
 });

@@ -1,0 +1,15 @@
+◇ injected env (7) from .env // tip: ⌘ enable debugging { debug: true }
+DB Config loaded: {
+  host: 'db.neko-meow.com',
+  user: 'root',
+  database: 'HRDBN',
+  port: '3306'
+}
+◇ injected env (0) from src\backend\.env // tip: ⌘ enable debugging { debug: true }
+Server running on port 3001
+Login attempt: { account: 'admin', password: 'pass' }
+User found: { id: 1, username: 'admin', role: 'ADMIN' }
+Password valid: true
+Login attempt: { account: 'admin', password: 'pass' }
+User found: { id: 1, username: 'admin', role: 'ADMIN' }
+Password valid: true

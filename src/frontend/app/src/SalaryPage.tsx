@@ -82,8 +82,19 @@ const SalaryPage = () => {
               </div>
 
               <div className='p-6 bg-gray-50 flex justify-between items-center'>
-                <span className='text-lg font-bold text-gray-700'>實領金額</span>
-                <span className='text-2xl font-bold text-green-600'>${r.net_salary}</span>
+                <div>
+                  <span className='text-lg font-bold text-gray-700'>實領金額</span>
+                  {r.paid_status === 'UNPAID' && r.payment_date && (
+                    <p className='text-sm text-orange-600 mt-1'>
+                      預計發放日：{new Date(r.payment_date).toLocaleDateString('zh-TW')}
+                    </p>
+                  )}
+                </div>
+                {r.paid_status === 'UNPAID' ? (
+                  <span className='text-2xl font-bold text-orange-600'>尚未發放</span>
+                ) : (
+                  <span className='text-2xl font-bold text-green-600'>${r.net_salary}</span>
+                )}
               </div>
             </div>
           ))}

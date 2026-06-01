@@ -1,0 +1,3 @@
+◇ injected env (0) from src\backend\.env // tip: ⌘ override existing { override: true }
+◇ injected env (0) from src\backend\.env // tip: ◈ secrets for agents [www.dotenvx.com]
+Server running on port 3001
