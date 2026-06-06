@@ -20,6 +20,7 @@ const AdminPage = () => {
     username: '', 
     password: '', 
     fullName: '', 
+    email: '',
     deptId: '', 
     role: 'EMPLOYEE', 
     status: 'ACTIVE', 
@@ -83,6 +84,7 @@ const AdminPage = () => {
       username: user.username, 
       password: '', 
       fullName: user.full_name, 
+      email: user.email || '',
       deptId: user.dept_id || '', 
       role: user.role, 
       status: user.status,
@@ -107,6 +109,7 @@ const AdminPage = () => {
       username: '', 
       password: '', 
       fullName: '', 
+      email: '',
       deptId: '', 
       role: 'EMPLOYEE', 
       status: 'ACTIVE', 
@@ -237,6 +240,7 @@ const AdminPage = () => {
                 <tr>
                   <th className='p-4'>帳號</th>
                   <th className='p-4'>姓名</th>
+                  <th className='p-4'>Email</th>
                   <th className='p-4'>部門</th>
                   <th className='p-4'>僱用類型</th>
                   <th className='p-4'>職位</th>
@@ -251,6 +255,7 @@ const AdminPage = () => {
                   <tr key={u.id} className='hover:bg-gray-50'>
                     <td className='p-4 font-medium'>{u.username}</td>
                     <td className='p-4'>{u.full_name}</td>
+                    <td className='p-4 text-sm text-gray-600'>{u.email || '-'}</td>
                     <td className='p-4'>{u.dept_name || (u.role === 'ADMIN' ? '系統管理' : '-')}</td>
                     <td className='p-4'>
                       <span className={`px-2 py-1 rounded text-xs font-bold ${u.employment_type === 'PART_TIME' ? 'bg-orange-100 text-orange-700' : 'bg-green-100 text-green-700'}`}>
@@ -372,11 +377,16 @@ const AdminPage = () => {
                     <label className='block text-sm text-gray-500 mb-1'>姓名 *</label>
                     <input type='text' value={userForm.fullName} onChange={e => setUserForm({...userForm, fullName: e.target.value})} className='w-full p-2 border rounded' placeholder='請填寫真實姓名' />
                   </div>
-                  <div>
-                    <label className='block text-sm text-gray-500 mb-1'>帳號 *</label>
-                    <input type='text' value={userForm.username} onChange={e => setUserForm({...userForm, username: e.target.value})} className='w-full p-2 border rounded' disabled={!!editingUser} placeholder='登入系統使用的帳號' />
-                  </div>
-                  {!editingUser && (
+                   <div>
+                     <label className='block text-sm text-gray-500 mb-1'>帳號 *</label>
+                     <input type='text' value={userForm.username} onChange={e => setUserForm({...userForm, username: e.target.value})} className='w-full p-2 border rounded' disabled={!!editingUser} placeholder='登入系統使用的帳號' />
+                   </div>
+                   <div>
+                     <label className='block text-sm text-gray-500 mb-1'>Email</label>
+                     <input type='email' value={userForm.email} onChange={e => setUserForm({...userForm, email: e.target.value})} className='w-full p-2 border rounded' placeholder='例如：user@example.com' />
+                     <p className='text-xs text-gray-400 mt-1'>用於打卡異常與後續通知寄送</p>
+                   </div>
+                   {!editingUser && (
                     <div>
                       <label className='block text-sm text-gray-500 mb-1'>密碼 *</label>
                       <input type='text' value={userForm.password} onChange={e => setUserForm({...userForm, password: e.target.value})} className='w-full p-2 border rounded' placeholder='請設定密碼' />

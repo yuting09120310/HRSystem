@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS salary_records (
   id INT AUTO_INCREMENT PRIMARY KEY,
   user_id INT NOT NULL,
   month VARCHAR(7) NOT NULL,
+  calculation_date DATE NULL,
+  confirmed_at DATETIME NULL,
   base_salary DECIMAL(10, 2) DEFAULT 0,
   professional_allowance DECIMAL(10, 2) DEFAULT 0,
   meal_allowance DECIMAL(10, 2) DEFAULT 0,
@@ -19,6 +21,10 @@ CREATE TABLE IF NOT EXISTS salary_records (
   net_salary DECIMAL(10, 2) DEFAULT 0,
   status VARCHAR(20) DEFAULT 'DRAFT',
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  paid_status VARCHAR(20) DEFAULT 'UNPAID',
+  paid_date DATETIME NULL,
+  locked_at DATETIME NULL,
+  payment_date DATE NULL,
   FOREIGN KEY (user_id) REFERENCES users(id),
   UNIQUE KEY unique_user_month (user_id, month)
 );
@@ -27,12 +33,42 @@ CREATE TABLE IF NOT EXISTS salary_deduction_details (
   id INT AUTO_INCREMENT PRIMARY KEY,
   record_id INT NOT NULL,
   leave_type VARCHAR(50) NOT NULL,
-  days INT NOT NULL,
+  detail_date DATE NULL,
+  start_time TIME NULL,
+  end_time TIME NULL,
+  days DECIMAL(8,2) NOT NULL,
   amount DECIMAL(10, 2) NOT NULL,
+  description TEXT NULL,
   FOREIGN KEY (record_id) REFERENCES salary_records(id)
 );
 
+CREATE TABLE IF NOT EXISTS attendance_anomaly_notifications (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  date DATE NOT NULL,
+  anomaly_type VARCHAR(50) NOT NULL,
+  details TEXT,
+  sent_to VARCHAR(255),
+  sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id),
+  UNIQUE KEY unique_user_date_type (user_id, date, anomaly_type)
+);
+
+CREATE TABLE IF NOT EXISTS salary_adjustments (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  user_id INT NOT NULL,
+  month VARCHAR(7) NOT NULL,
+  adjustment_type VARCHAR(50) NOT NULL,
+  amount DECIMAL(10, 2) NOT NULL,
+  description TEXT,
+  created_by INT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (user_id) REFERENCES users(id),
+  FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
 ALTER TABLE users ADD COLUMN hire_date DATE NULL AFTER dept_id;
+ALTER TABLE users ADD COLUMN email VARCHAR(255) NULL AFTER full_name;
 
 CREATE TABLE IF NOT EXISTS leave_rules (
   id INT AUTO_INCREMENT PRIMARY KEY,

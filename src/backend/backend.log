@@ -1,3 +1,14 @@
+◇ injected env (7) from src\backend\.env // tip: ⌁ auth for agents [www.vestauth.com]
+DB Config loaded: {
+  host: 'db.neko-meow.com',
+  user: 'root',
+  database: 'HRDBN',
+  port: '3306'
+}
 ◇ injected env (0) from src\backend\.env // tip: ⌘ override existing { override: true }
-◇ injected env (0) from src\backend\.env // tip: ◈ secrets for agents [www.dotenvx.com]
 Server running on port 3001
+✅ 休假計算已移至資料庫層 (Stored Procedures + Events)
+✅ 每日 00:10 自動更新特休 (MySQL Event Scheduler)
+✅ 每年 1/1 00:10 自動重置曆年制假別
+✅ 每日 08:00 自動檢查前一日打卡異常，下一次執行：2026/6/6 上午8:00:00
+✅ 2026-06-05 打卡異常檢查完成，通知 17 筆
