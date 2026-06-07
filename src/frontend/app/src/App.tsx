@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import axios, { AxiosResponse } from 'axios';
-import { Clock, Calendar, User, CheckCircle, XCircle, LayoutDashboard, LogOut, Settings, Lock, Shield, DollarSign } from 'lucide-react';
+import { Clock, Calendar, User, CheckCircle, XCircle, LayoutDashboard, LogOut, Settings, Lock, Shield, DollarSign, Edit3 } from 'lucide-react';
 import LoginPage from './LoginPage';
 import ProfilePage from './ProfilePage';
 import PasswordPage from './PasswordPage';
@@ -92,6 +92,7 @@ const App = () => {
         <div className='flex flex-col gap-1'>
           <p className='text-xs text-gray-500 uppercase tracking-wider px-3 mb-1'>主要功能</p>
           <button onClick={() => setView('punch')} className={`p-3 rounded flex items-center gap-2 transition text-left ${view === 'punch' ? 'bg-slate-700' : 'hover:bg-slate-800'}`}><Clock size={20}/> 打卡系統</button>
+          <button onClick={() => setView('exception')} className={`p-3 rounded flex items-center gap-2 transition text-left ${view === 'exception' ? 'bg-slate-700' : 'hover:bg-slate-800'}`}><Edit3 size={20}/> 補登申請</button>
           <button onClick={() => setView('leave')} className={`p-3 rounded flex items-center gap-2 transition text-left ${view === 'leave' ? 'bg-slate-700' : 'hover:bg-slate-800'}`}><Calendar size={20}/> 請假申請</button>
           {(user.role === 'MANAGER' || user.role === 'ADMIN') && (
             <button onClick={() => setView('schedule')} className={`p-3 rounded flex items-center gap-2 transition text-left ${view === 'schedule' ? 'bg-slate-700' : 'hover:bg-slate-800'}`}><Calendar size={20}/> 排班系統</button>
@@ -132,6 +133,7 @@ const App = () => {
       </nav>
       <main className='flex-1 p-10 overflow-auto'>
         {view === 'punch' && <PunchView userId={user.id} />}
+        {view === 'exception' && <AttendanceExceptionView />}
         {view === 'leave' && <LeaveView userId={user.id} user={user} />}
         {view === 'schedule' && <SchedulePage />}
         {view === 'balance' && <LeaveBalancePage />}
@@ -148,45 +150,15 @@ const App = () => {
 
 const PunchView = ({ userId }: { userId: number }) => {
   const [history, setHistory] = useState<AttendanceRecord[]>([]);
-  const [exceptions, setExceptions] = useState<AttendanceExceptionRequest[]>([]);
-  const [exceptionForm, setExceptionForm] = useState({
-    exceptionType: 'MISSING_CLOCK_IN',
-    date: '',
-    requestedClockIn: '',
-    requestedClockOut: '',
-    reason: ''
-  });
   const refresh = async () => {
     try {
-      const [historyRes, exceptionsRes] = await Promise.all([
-        axios.get(`${API_BASE}/attendance/history`),
-        axios.get(`${API_BASE}/attendance/exceptions/my`)
-      ]);
-      setHistory(historyRes.data);
-      setExceptions(exceptionsRes.data);
+      const res = await axios.get(`${API_BASE}/attendance/history`);
+      setHistory(res.data);
     } catch (e) { console.error(e); }
   };
   useEffect(() => { refresh(); }, []);
   const handleClockIn = async () => { await axios.post(`${API_BASE}/attendance/clock-in`); refresh(); };
   const handleClockOut = async () => { await axios.post(`${API_BASE}/attendance/clock-out`); refresh(); };
-  const submitException = async () => {
-    try {
-      await axios.post(`${API_BASE}/attendance/exceptions`, exceptionForm);
-      setExceptionForm({ exceptionType: 'MISSING_CLOCK_IN', date: '', requestedClockIn: '', requestedClockOut: '', reason: '' });
-      refresh();
-      alert('補登申請已送出');
-    } catch (e: any) {
-      alert(e.response?.data?.error || '補登申請失敗');
-    }
-  };
-  const needsClockIn = exceptionForm.exceptionType === 'MISSING_CLOCK_IN' || exceptionForm.exceptionType === 'BOTH';
-  const needsClockOut = exceptionForm.exceptionType === 'MISSING_CLOCK_OUT' || exceptionForm.exceptionType === 'BOTH';
-  const formatExceptionType = (type: string) => {
-    if (type === 'MISSING_CLOCK_IN') return '忘刷上班';
-    if (type === 'MISSING_CLOCK_OUT') return '忘刷下班';
-    if (type === 'BOTH') return '上下班皆忘刷';
-    return type;
-  };
   return (
     <div className='max-w-4xl mx-auto'>
       <h2 className='text-3xl font-bold mb-6'>上班打卡</h2>
@@ -212,12 +184,53 @@ const PunchView = ({ userId }: { userId: number }) => {
           </tbody>
         </table>
       </div>
-      <div className='mt-8 bg-white p-6 shadow rounded-xl'>
+    </div>
+  );
+};
+
+const AttendanceExceptionView = () => {
+  const [form, setForm] = useState({
+    exceptionType: 'MISSING_CLOCK_IN',
+    date: '',
+    requestedClockIn: '',
+    requestedClockOut: '',
+    reason: ''
+  });
+  const [exceptions, setExceptions] = useState<AttendanceExceptionRequest[]>([]);
+  const refresh = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/attendance/exceptions/my`);
+      setExceptions(res.data);
+    } catch (e) { console.error(e); }
+  };
+  useEffect(() => { refresh(); }, []);
+  const submit = async () => {
+    try {
+      await axios.post(`${API_BASE}/attendance/exceptions`, form);
+      setForm({ exceptionType: 'MISSING_CLOCK_IN', date: '', requestedClockIn: '', requestedClockOut: '', reason: '' });
+      refresh();
+      alert('補登申請已送出');
+    } catch (e: any) {
+      alert(e.response?.data?.error || '補登申請失敗');
+    }
+  };
+  const needsClockIn = form.exceptionType === 'MISSING_CLOCK_IN' || form.exceptionType === 'BOTH';
+  const needsClockOut = form.exceptionType === 'MISSING_CLOCK_OUT' || form.exceptionType === 'BOTH';
+  const formatExceptionType = (type: string) => {
+    if (type === 'MISSING_CLOCK_IN') return '忘刷上班';
+    if (type === 'MISSING_CLOCK_OUT') return '忘刷下班';
+    if (type === 'BOTH') return '上下班皆忘刷';
+    return type;
+  };
+  return (
+    <div className='max-w-4xl mx-auto'>
+      <h2 className='text-3xl font-bold mb-6'>補登申請</h2>
+      <div className='bg-white p-6 shadow rounded-xl mb-8'>
         <h3 className='text-xl font-bold mb-4'>忘刷卡補登申請</h3>
         <div className='grid grid-cols-2 gap-4'>
           <div className='flex flex-col gap-2'>
             <label className='text-sm text-gray-500'>補登類型</label>
-            <select className='p-2 border rounded' value={exceptionForm.exceptionType} onChange={e => setExceptionForm({ ...exceptionForm, exceptionType: e.target.value })}>
+            <select className='p-2 border rounded' value={form.exceptionType} onChange={e => setForm({ ...form, exceptionType: e.target.value })}>
               <option value='MISSING_CLOCK_IN'>忘刷上班</option>
               <option value='MISSING_CLOCK_OUT'>忘刷下班</option>
               <option value='BOTH'>上下班皆忘刷</option>
@@ -225,28 +238,28 @@ const PunchView = ({ userId }: { userId: number }) => {
           </div>
           <div className='flex flex-col gap-2'>
             <label className='text-sm text-gray-500'>日期</label>
-            <input type='date' className='p-2 border rounded' value={exceptionForm.date} onChange={e => setExceptionForm({ ...exceptionForm, date: e.target.value })} />
+            <input type='date' className='p-2 border rounded' value={form.date} onChange={e => setForm({ ...form, date: e.target.value })} />
           </div>
           {needsClockIn && (
             <div className='flex flex-col gap-2'>
               <label className='text-sm text-gray-500'>補登上班時間</label>
-              <input type='time' className='p-2 border rounded' value={exceptionForm.requestedClockIn} onChange={e => setExceptionForm({ ...exceptionForm, requestedClockIn: e.target.value })} />
+              <input type='time' className='p-2 border rounded' value={form.requestedClockIn} onChange={e => setForm({ ...form, requestedClockIn: e.target.value })} />
             </div>
           )}
           {needsClockOut && (
             <div className='flex flex-col gap-2'>
               <label className='text-sm text-gray-500'>補登下班時間</label>
-              <input type='time' className='p-2 border rounded' value={exceptionForm.requestedClockOut} onChange={e => setExceptionForm({ ...exceptionForm, requestedClockOut: e.target.value })} />
+              <input type='time' className='p-2 border rounded' value={form.requestedClockOut} onChange={e => setForm({ ...form, requestedClockOut: e.target.value })} />
             </div>
           )}
           <div className='col-span-2 flex flex-col gap-2'>
             <label className='text-sm text-gray-500'>原因</label>
-            <input className='p-2 border rounded' value={exceptionForm.reason} onChange={e => setExceptionForm({ ...exceptionForm, reason: e.target.value })} placeholder='請說明忘刷原因' />
+            <input className='p-2 border rounded' value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} placeholder='請說明忘刷原因' />
           </div>
-          <button onClick={submitException} className='col-span-2 p-3 bg-indigo-600 text-white rounded-lg font-bold hover:bg-indigo-700'>送出補登申請</button>
+          <button onClick={submit} className='col-span-2 p-3 bg-indigo-600 text-white rounded-lg font-bold hover:bg-indigo-700'>送出補登申請</button>
         </div>
       </div>
-      <div className='mt-8 bg-white shadow rounded-xl overflow-hidden'>
+      <div className='bg-white shadow rounded-xl overflow-hidden'>
         <div className='p-4 border-b font-bold'>我的補登申請紀錄</div>
         <table className='w-full text-left'>
           <thead className='bg-gray-100 text-gray-600 uppercase text-sm'><tr><th className='p-4'>日期</th><th className='p-4'>類型</th><th className='p-4'>補登時間</th><th className='p-4'>原因</th><th className='p-4'>狀態</th></tr></thead>
